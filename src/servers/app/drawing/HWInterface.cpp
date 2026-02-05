@@ -9,6 +9,8 @@
 
 #include "HWInterface.h"
 
+#include <OS.h>
+#include <inttypes.h>
 #include <new>
 #include <stdio.h>
 #include <string.h>
@@ -16,9 +18,11 @@
 
 #include <vesa/vesa_info.h>
 
+#include "Compositor.h"
 #include "drawing_support.h"
 
 #include "DrawingEngine.h"
+#include "PresentQueue.h"
 #include "RenderingBuffer.h"
 #include "SystemPalette.h"
 
@@ -52,13 +56,25 @@ HWInterface::HWInterface()
 	fHardwareCursorEnabled(false),
 	fCursorLocation(0, 0),
 	fVGADevice(-1),
-	fListeners(20)
+	fListeners(20),
+	fCompositorBackground((rgb_color){0, 0, 0, 255}),
+	fCompositorFrameCounter(0),
+	fCompositorLogEveryN(120),
+	fPresentInvalidateLock("present invalidate lock"),
+	fPresentThread(-1),
+	fPresentSemaphore(-1),
+	fPresentScheduled(0),
+	fPresentThreadRunning(0),
+	fPendingInvalidations(0),
+	fPresentCounter(0),
+	fPresentLogTime(0)
 {
 }
 
 
 HWInterface::~HWInterface()
 {
+	_StopPresentThread();
 }
 
 
@@ -290,6 +306,57 @@ HWInterface::DrawingBuffer() const
 status_t
 HWInterface::InvalidateRegion(const BRegion& region)
 {
+	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
+		{
+			BAutolock _(fPresentInvalidateLock);
+			int32 pendingBefore = fPendingInvalidate.CountRects();
+			fPendingInvalidate.Include(&region);
+			if (fPendingInvalidate.CountRects() < pendingBefore) {
+				debug_printf("compositor: pending invalidate shrank unexpectedly "
+					"(before=%" B_PRId32 " after=%" B_PRId32 ")\n",
+					pendingBefore, fPendingInvalidate.CountRects());
+			}
+		}
+		atomic_add(&fPendingInvalidations, 1);
+		_SchedulePresent();
+		return B_OK;
+	}
+
+	if (SupportsTripleBuffering()) {
+		RenderingBuffer* frontBuffer = FrontBuffer();
+		RenderingBuffer* backBuffer = BackBuffer();
+
+		if (!backBuffer || !frontBuffer)
+			return B_NO_INIT;
+
+		BRegion clipped(region);
+		IntRect bufferClip(backBuffer->Bounds());
+		clipped.IntersectWith((BRect)bufferClip);
+
+		if (clipped.CountRects() == 0)
+			return B_OK;
+
+		IntRect area(clipped.Frame());
+		if (!area.IsValid())
+			return B_OK;
+
+		bool cursorLocked = fFloatingOverlaysLock.Lock();
+
+		if (IsDoubleBuffered())
+			clipped.Exclude((clipping_rect)_CursorFrame());
+
+		WaitForRetrace(0);
+
+		_CopyBackToFront(clipped);
+		_DrawCursor(bufferClip & area);
+
+		if (cursorLocked)
+			fFloatingOverlaysLock.Unlock();
+
+		SwapBackBuffers();
+		return B_OK;
+	}
+
 	int32 count = region.CountRects();
 	for (int32 i = 0; i < count; i++) {
 		status_t result = Invalidate(region.RectAt(i));
@@ -318,6 +385,11 @@ HWInterface::Invalidate(const BRect& frame)
 status_t
 HWInterface::CopyBackToFront(const BRect& frame)
 {
+	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
+		BRegion region(frame);
+		return InvalidateRegion(region);
+	}
+
 	RenderingBuffer* frontBuffer = FrontBuffer();
 	RenderingBuffer* backBuffer = BackBuffer();
 
@@ -339,6 +411,9 @@ HWInterface::CopyBackToFront(const BRect& frame)
 		if (IsDoubleBuffered())
 			region.Exclude((clipping_rect)_CursorFrame());
 
+		if (SupportsTripleBuffering())
+			WaitForRetrace(0);
+
 		_CopyBackToFront(region);
 
 		_DrawCursor(area);
@@ -346,11 +421,230 @@ HWInterface::CopyBackToFront(const BRect& frame)
 		if (cursorLocked)
 			fFloatingOverlaysLock.Unlock();
 
+		if (SupportsTripleBuffering())
+			SwapBackBuffers();
+
 		return B_OK;
 	}
 	return B_BAD_VALUE;
 }
 
+
+bool
+HWInterface::SupportsTripleBuffering() const
+{
+	return false;
+}
+
+
+void
+HWInterface::SwapBackBuffers()
+{
+}
+
+
+void
+HWInterface::ConfigureCompositor(int32 width, int32 height,
+	color_space format)
+{
+	if (!fCompositor.IsSet())
+		fCompositor.SetTo(new(std::nothrow) Compositor());
+	if (!fPresentQueue.IsSet())
+		fPresentQueue.SetTo(new(std::nothrow) PresentQueue(width, height, format));
+	else
+		fPresentQueue->Resize(width, height, format);
+	_StartPresentThread();
+}
+
+
+void
+HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
+	const rgb_color& background)
+{
+	fWindowSnapshots = snapshots;
+	fCompositorBackground = background;
+}
+
+
+void
+HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
+{
+	if (buffer == NULL || FrontBuffer() == NULL)
+		return;
+
+	BRegion region(dirty);
+	region.IntersectWith((BRect)buffer->Bounds());
+	if (region.CountRects() == 0)
+		return;
+
+	bool cursorLocked = fFloatingOverlaysLock.Lock();
+	if (IsDoubleBuffered())
+		region.Exclude((clipping_rect)_CursorFrame());
+
+	uint32 srcBPR = buffer->BytesPerRow();
+	uint8* src = (uint8*)buffer->Bits();
+
+	int32 count = region.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		clipping_rect r = region.RectAtInt(i);
+		uint8* srcOffset = src + r.top * srcBPR + r.left * 4;
+		_CopyToFront(srcOffset, srcBPR, r.left, r.top, r.right, r.bottom);
+	}
+
+	_DrawCursor(IntRect(region.Frame()));
+
+	if (cursorLocked)
+		fFloatingOverlaysLock.Unlock();
+}
+
+
+status_t
+HWInterface::_StartPresentThread()
+{
+	if (fPresentThread >= 0)
+		return B_OK;
+
+	fPresentSemaphore = create_sem(0, "present queue sem");
+	if (fPresentSemaphore < 0)
+		return fPresentSemaphore;
+
+	fPresentThreadRunning = 1;
+	fPresentThread = spawn_thread(_PresentThreadEntry, "present queue thread",
+		B_DISPLAY_PRIORITY, this);
+	if (fPresentThread < 0) {
+		delete_sem(fPresentSemaphore);
+		fPresentSemaphore = -1;
+		fPresentThreadRunning = 0;
+		return fPresentThread;
+	}
+
+	resume_thread(fPresentThread);
+	return B_OK;
+}
+
+
+void
+HWInterface::_StopPresentThread()
+{
+	if (fPresentThread < 0)
+		return;
+
+	fPresentThreadRunning = 0;
+	release_sem(fPresentSemaphore);
+
+	status_t status;
+	wait_for_thread(fPresentThread, &status);
+	fPresentThread = -1;
+
+	if (fPresentSemaphore >= 0) {
+		delete_sem(fPresentSemaphore);
+		fPresentSemaphore = -1;
+	}
+}
+
+
+void
+HWInterface::_SchedulePresent()
+{
+	if (fPresentSemaphore < 0)
+		return;
+
+	if (atomic_test_and_set(&fPresentScheduled, 1, 0) == 0)
+		release_sem(fPresentSemaphore);
+}
+
+
+void
+HWInterface::_ProcessPendingInvalidate()
+{
+	BRegion pending;
+	{
+		BAutolock _(fPresentInvalidateLock);
+		if (fPendingInvalidate.CountRects() == 0)
+			return;
+		pending = fPendingInvalidate;
+		fPendingInvalidate.MakeEmpty();
+	}
+
+	if (!fPresentQueue.IsSet() || !fCompositor.IsSet())
+		return;
+
+	if (!LockExclusiveAccess())
+		return;
+
+	RenderingBuffer* source = DrawingBuffer();
+	RenderingBuffer* renderTarget = fPresentQueue->AcquireForRender();
+	if (source == NULL || renderTarget == NULL) {
+		UnlockExclusiveAccess();
+		return;
+	}
+
+	ComposeStats stats = fCompositor->Compose(*renderTarget, *source,
+		pending, fWindowSnapshots, fCompositorBackground);
+
+	fPresentQueue->Submit(renderTarget, pending);
+	bigtime_t presentTime = fPresentQueue->PresentNext(*this, true);
+	UnlockExclusiveAccess();
+
+	int32 invalidations = atomic_get(&fPendingInvalidations);
+	atomic_set(&fPendingInvalidations, 0);
+
+	fCompositorFrameCounter++;
+	if (fCompositorLogEveryN > 0
+		&& (fCompositorFrameCounter % fCompositorLogEveryN) == 0) {
+		debug_printf("compositor: frame %" B_PRId64
+			" invalidations=%" B_PRId32 " dirtyRects=%" B_PRId32
+			" dirtyPixels=%" B_PRId64 " windows=%" B_PRId32
+			" alpha=%" B_PRId32 " compose=%" B_PRId64 "us"
+			" present=%" B_PRId64 "us\n",
+			fCompositorFrameCounter, invalidations, stats.dirtyRects,
+			stats.dirtyPixels, stats.windowsComposed, stats.alphaWindows,
+			stats.composeTime, presentTime);
+	}
+
+	fPresentCounter++;
+	bigtime_t now = system_time();
+	if (fPresentLogTime == 0)
+		fPresentLogTime = now;
+	if (now - fPresentLogTime >= 1000000) {
+		debug_printf("compositor: presents per second %" B_PRId64 "\n",
+			fPresentCounter);
+		fPresentCounter = 0;
+		fPresentLogTime = now;
+	}
+}
+
+
+status_t
+HWInterface::_PresentThreadEntry(void* data)
+{
+	HWInterface* interface = static_cast<HWInterface*>(data);
+	while (atomic_get(&interface->fPresentThreadRunning) != 0) {
+		status_t status = acquire_sem(interface->fPresentSemaphore);
+		if (status != B_OK
+			|| atomic_get(&interface->fPresentThreadRunning) == 0) {
+			continue;
+		}
+
+		while (atomic_get(&interface->fPresentThreadRunning) != 0) {
+			snooze(2000);
+			interface->_ProcessPendingInvalidate();
+			if (!interface->_HasPendingInvalidate()) {
+				atomic_set(&interface->fPresentScheduled, 0);
+				break;
+			}
+		}
+	}
+	return B_OK;
+}
+
+
+bool
+HWInterface::_HasPendingInvalidate()
+{
+	BAutolock _(fPresentInvalidateLock);
+	return fPendingInvalidate.CountRects() > 0;
+}
 
 void
 HWInterface::_CopyBackToFront(/*const*/ BRegion& region)
@@ -634,14 +928,13 @@ HWInterface::_CopyToFront(uint8* src, uint32 srcBPR, int32 x, int32 y,
 		case B_RGB32:
 		case B_RGBA32:
 		{
-			int32 bytes = (right - x + 1) * 4;
+			int32 width = right - x + 1;
+			int32 bytes = width * 4;
 
 			if (bytes > 0) {
 				// offset to left top pixel in dest buffer
 				dst += y * dstBPR + x * 4;
-				// copy
 				for (; y <= bottom; y++) {
-					// bytes is guaranteed to be multiple of 4
 					memcpy(dst, src, bytes);
 					dst += dstBPR;
 					src += srcBPR;
@@ -1050,4 +1343,3 @@ HWInterface::_IsValidMode(const display_mode& mode)
 
 	return true;
 }
-

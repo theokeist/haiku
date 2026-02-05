@@ -30,11 +30,14 @@
 #include <DirectWindow.h>
 #include <Entry.h>
 #include <FindDirectory.h>
+#include <InterfaceDefs.h>
 #include <Message.h>
 #include <MessageFilter.h>
 #include <Path.h>
 #include <Region.h>
 #include <Roster.h>
+
+#include <vector>
 
 #include <PrivateScreen.h>
 #include <ServerProtocol.h>
@@ -58,6 +61,7 @@
 #include "ServerWindow.h"
 #include "SystemPalette.h"
 #include "WindowPrivate.h"
+#include "Compositor.h"
 #include "Window.h"
 #include "Workspace.h"
 #include "WorkspacesView.h"
@@ -441,6 +445,7 @@ Desktop::Desktop(uid_t userID, const char* targetScreen)
 	fViewUnderMouse(B_NULL_TOKEN),
 	fLastMousePosition(B_ORIGIN),
 	fLastMouseButtons(0),
+	fAlphaDebugEnabled(false),
 
 	fFocus(NULL),
 	fFront(NULL),
@@ -1710,6 +1715,8 @@ Desktop::AddWindow(Window *window)
 	if (!window->IsNormal())
 		fSubsetWindows.AddWindow(window);
 
+	window->SetAlphaDebugEnabled(fAlphaDebugEnabled);
+
 	if (window->IsNormal()) {
 		if (window->Workspaces() == B_CURRENT_WORKSPACE)
 			window->SetWorkspaces(workspace_to_workspaces(CurrentWorkspace()));
@@ -1958,6 +1965,55 @@ Desktop::SetWindowTitle(Window *window, const char* title)
 	window->SetTitle(title, dirty);
 
 	RebuildAndRedrawAfterWindowChange(window, dirty);
+}
+
+
+void
+Desktop::SetAlphaDebugEnabled(bool enabled)
+{
+	if (fAlphaDebugEnabled == enabled)
+		return;
+
+	fAlphaDebugEnabled = enabled;
+
+	if (!LockAllWindows())
+		return;
+
+	for (Window* window = AllWindows().FirstWindow(); window != NULL;
+			window = window->NextWindow(kAllWindowList)) {
+		window->SetAlphaDebugEnabled(enabled);
+	}
+
+	UnlockAllWindows();
+}
+
+
+bool
+Desktop::HandleAlphaDebugWheel(const BMessage& message)
+{
+	if (!fAlphaDebugEnabled)
+		return false;
+
+	int32 modifiers = message.FindInt32("modifiers");
+	if ((modifiers & (B_OPTION_KEY | B_CONTROL_KEY | B_SHIFT_KEY))
+			!= (B_OPTION_KEY | B_CONTROL_KEY | B_SHIFT_KEY)) {
+		return false;
+	}
+
+	float deltaY = 0.0f;
+	message.FindFloat("be:wheel_delta_y", &deltaY);
+	if (deltaY == 0.0f)
+		return true;
+
+	if (!LockAllWindows())
+		return true;
+
+	Window* window = FocusWindow();
+	if (window != NULL)
+		window->SetAlpha(window->Alpha() + deltaY * 0.05f);
+
+	UnlockAllWindows();
+	return true;
 }
 
 
@@ -3484,6 +3540,28 @@ Desktop::_RebuildClippingForAllWindows(BRegion& stillAvailableOnScreen)
 void
 Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 {
+	// Update compositor snapshot state for this redraw pass.
+	if (HWInterface() != NULL) {
+		std::vector<WindowSnapshot> snapshots;
+		for (Window* window = CurrentWindows().FirstWindow(); window != NULL;
+				window = window->NextWindow(fCurrentWorkspace)) {
+			if (window->IsHidden())
+				continue;
+
+			if (!dirtyRegion.Intersects(window->VisibleRegion().Frame()))
+				continue;
+
+			WindowSnapshot snapshot;
+			snapshot.visible = window->VisibleRegion();
+			snapshot.alpha = window->Alpha();
+			snapshot.opaqueFastPath = !window->HasAlpha();
+			snapshots.push_back(snapshot);
+		}
+
+		HWInterface()->UpdateCompositorState(snapshots,
+			fWorkspaces[fCurrentWorkspace].Color());
+	}
+
 	// send redraw messages to all windows intersecting the dirty region
 	for (Window* window = CurrentWindows().LastWindow(); window != NULL;
 			window = window->PreviousWindow(fCurrentWorkspace)) {
@@ -3558,7 +3636,10 @@ Desktop::RebuildAndRedrawAfterWindowChange(Window* changedWindow,
 	_SetBackground(stillAvailableOnScreen);
 	_WindowChanged(changedWindow);
 
-	_TriggerWindowRedrawing(dirty, dirty);
+	BRegion expose(dirty);
+	expose.Exclude(&changedWindow->VisibleRegion());
+
+	_TriggerWindowRedrawing(dirty, expose);
 }
 
 

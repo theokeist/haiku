@@ -144,7 +144,8 @@ AccelerantHWInterface::AccelerantHWInterface()
 	fModeCount(0),
 	fModeList(NULL),
 
-	fBackBuffer(NULL),
+	fBackBufferIndex(0),
+	fBackBufferCount(0),
 	fFrontBuffer(new (nothrow) AccelerantBuffer()),
 
 	fInitialModeSwitch(true),
@@ -635,27 +636,36 @@ AccelerantHWInterface::SetMode(const display_mode& mode)
 	_UpdateHooksAfterModeChange();
 
 	// update backbuffer if neccessary
-	if (!fBackBuffer.IsSet()
-		|| fBackBuffer->Width() != fFrontBuffer->Width()
-		|| fBackBuffer->Height() != fFrontBuffer->Height()
-		|| (fFrontBuffer->ColorSpace() == B_RGB32 && fBackBuffer.IsSet())) {
+	if (!fBackBuffers[0].IsSet()
+		|| fBackBuffers[0]->Width() != fFrontBuffer->Width()
+		|| fBackBuffers[0]->Height() != fFrontBuffer->Height()
+		|| (fFrontBuffer->ColorSpace() == B_RGB32 && fBackBuffers[0].IsSet())) {
 		// NOTE: backbuffer is always B_RGBA32, this simplifies the
 		// drawing backend implementation tremendously for the time
 		// being. The color space conversion is handled in CopyBackToFront()
 
-		fBackBuffer.Unset();
+		for (int32 i = 0; i < 3; i++)
+			fBackBuffers[i].Unset();
+		fBackBufferIndex = 0;
+		fBackBufferCount = 0;
 
-		fBackBuffer.SetTo(new(nothrow) MallocBuffer(
-			fFrontBuffer->Width(), fFrontBuffer->Height()));
+		for (int32 i = 0; i < 3; i++) {
+			fBackBuffers[i].SetTo(new(nothrow) MallocBuffer(
+				fFrontBuffer->Width(), fFrontBuffer->Height()));
 
-		status = fBackBuffer.IsSet()
-			? fBackBuffer->InitCheck() : B_NO_MEMORY;
-		if (status < B_OK) {
-			fBackBuffer.Unset();
-			return status;
+			status_t bufferStatus = fBackBuffers[i].IsSet()
+				? fBackBuffers[i]->InitCheck() : B_NO_MEMORY;
+			if (bufferStatus < B_OK) {
+				fBackBuffers[i].Unset();
+				break;
+			}
+
+			memset(fBackBuffers[i]->Bits(), 255, fBackBuffers[i]->BitsLength());
+			fBackBufferCount++;
 		}
-		// clear out backbuffer, alpha is 255 this way
-		memset(fBackBuffer->Bits(), 255, fBackBuffer->BitsLength());
+
+		if (fBackBufferCount == 0)
+			return B_NO_MEMORY;
 	}
 
 	// update color palette configuration if necessary
@@ -1367,14 +1377,36 @@ AccelerantHWInterface::FrontBuffer() const
 RenderingBuffer*
 AccelerantHWInterface::BackBuffer() const
 {
-	return fBackBuffer.Get();
+	if (fBackBufferCount == 0)
+		return NULL;
+
+	return fBackBuffers[fBackBufferIndex].Get();
 }
 
 
 bool
 AccelerantHWInterface::IsDoubleBuffered() const
 {
-	return fBackBuffer.IsSet();
+	return fBackBufferCount > 0;
+}
+
+
+bool
+AccelerantHWInterface::SupportsTripleBuffering() const
+{
+	return fBackBufferCount >= 3;
+}
+
+
+void
+AccelerantHWInterface::SwapBackBuffers()
+{
+	if (fBackBufferCount < 2)
+		return;
+
+	AutoWriteLocker _(this);
+	fBackBufferIndex = (fBackBufferIndex + 1) % fBackBufferCount;
+	_NotifyFrameBufferChanged();
 }
 
 

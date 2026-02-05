@@ -63,6 +63,8 @@ public:
 	virtual	RenderingBuffer*	FrontBuffer() const;
 	virtual	RenderingBuffer*	BackBuffer() const;
 	virtual	bool				IsDoubleBuffered() const;
+	virtual	bool				HasScreenBlitHook() const
+									{ return fAccScreenBlit != NULL; }
 
 	virtual	status_t			Invalidate(const BRect& frame);
 

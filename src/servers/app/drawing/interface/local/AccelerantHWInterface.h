@@ -87,6 +87,8 @@ public:
 	virtual	RenderingBuffer*	FrontBuffer() const;
 	virtual	RenderingBuffer*	BackBuffer() const;
 	virtual	bool				IsDoubleBuffered() const;
+	virtual	bool				SupportsTripleBuffering() const;
+	virtual	void				SwapBackBuffers();
 
 protected:
 	virtual	void				_CopyBackToFront(/*const*/ BRegion& region);
@@ -164,7 +166,9 @@ private:
 			display_mode*		fModeList;
 
 			ObjectDeleter<RenderingBuffer>
-								fBackBuffer;
+								fBackBuffers[3];
+			int32				fBackBufferIndex;
+			int32				fBackBufferCount;
 			ObjectDeleter<AccelerantBuffer>
 								fFrontBuffer;
 

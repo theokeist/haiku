@@ -13,6 +13,7 @@
 
 
 #include <DecorInfo.h>
+#include <Path.h>
 #include <String.h>
 #include <View.h>
 
@@ -49,6 +50,9 @@ private:
 
 			bool				_DoubleScrollBarArrows();
 			void				_SetDoubleScrollBarArrows(bool doubleArrows);
+			bool				_AlphaDebugEnabled() const;
+			void				_SetAlphaDebugEnabled(bool enabled);
+			status_t			_AlphaDebugSettingsPath(BPath& path) const;
 
 private:
 			DecorInfoUtility	fDecorUtility;
@@ -63,6 +67,7 @@ private:
 
 			FakeScrollBar*		fArrowStyleSingle;
 			FakeScrollBar*		fArrowStyleDouble;
+			BCheckBox*			fAlphaDebugCheckBox;
 
 			BString				fSavedDecor;
 			BString				fCurrentDecor;
@@ -71,6 +76,8 @@ private:
 			BString				fCurrentControlLook;
 
 			bool				fSavedDoubleArrowsValue : 1;
+			bool				fSavedAlphaDebugEnabled : 1;
+			bool				fCurrentAlphaDebugEnabled : 1;
 };
 
 

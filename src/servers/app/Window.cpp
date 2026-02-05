@@ -88,12 +88,15 @@ Window::Window(const BRect& frame, const char *name,
 	fVisibleContentRegionValid(false),
 	fContentRegionValid(false),
 	fEffectiveDrawingRegionValid(false),
+	fHasAlpha(false),
+	fAlphaDebugEnabled(false),
 
 	fRegionPool(),
 
 	fWindow(window),
 	fDrawingEngine(drawingEngine),
 	fDesktop(window->Desktop()),
+	fAlpha(1.0f),
 
 	fCurrentUpdateSession(&fUpdateSessions[0]),
 	fPendingUpdateSession(&fUpdateSessions[1]),
@@ -176,6 +179,57 @@ Window::~Window()
 	DetachFromWindowStack(false);
 
 	gDecorManager.CleanupForWindow(this);
+}
+
+
+void
+Window::SetAlpha(float alpha)
+{
+	if (alpha < 0.0f)
+		alpha = 0.0f;
+	else if (alpha > 1.0f)
+		alpha = 1.0f;
+
+	if (fAlpha == alpha)
+		return;
+
+	fAlpha = alpha;
+	fHasAlpha = alpha < 1.0f;
+
+	_UpdateAlphaDebug();
+
+	BRegion dirty(VisibleRegion());
+	if (dirty.CountRects() > 0)
+		MarkDirty(dirty);
+}
+
+
+void
+Window::SetAlphaDebugEnabled(bool enabled)
+{
+	if (fAlphaDebugEnabled == enabled)
+		return;
+
+	fAlphaDebugEnabled = enabled;
+	_UpdateAlphaDebug();
+}
+
+
+void
+Window::_UpdateAlphaDebug()
+{
+	if (fDesktop == NULL)
+		return;
+
+	::Decorator* decorator = Decorator();
+	if (decorator == NULL)
+		return;
+
+	DesktopSettings settings(fDesktop);
+	BRegion dirty;
+	decorator->SetAlphaDebug(fAlpha, fAlphaDebugEnabled, settings, &dirty);
+	if (dirty.CountRects() > 0)
+		MarkDirty(dirty);
 }
 
 

@@ -19,6 +19,8 @@
 
 #include <video_overlay.h>
 
+#include <vector>
+
 #include <new>
 
 #include "IntRect.h"
@@ -32,6 +34,10 @@ class EventStream;
 class Overlay;
 class RenderingBuffer;
 class ServerBitmap;
+class Compositor;
+class PresentQueue;
+
+struct WindowSnapshot;
 
 
 class HWInterfaceListener {
@@ -142,12 +148,27 @@ public:
 	virtual	RenderingBuffer*	FrontBuffer() const = 0;
 	virtual	RenderingBuffer*	BackBuffer() const = 0;
 	virtual	bool				IsDoubleBuffered() const = 0;
+	virtual	bool				HasScreenBlitHook() const
+									{ return false; }
 
 	// Invalidate is used for scheduling an area for updating
 	virtual	status_t			InvalidateRegion(const BRegion& region);
 	virtual	status_t			Invalidate(const BRect& frame);
 	// while CopyBackToFront() actually performs the operation
 	virtual	status_t			CopyBackToFront(const BRect& frame);
+
+	// back buffer management
+	virtual	bool				SupportsTripleBuffering() const;
+	virtual	void				SwapBackBuffers();
+
+	// compositor integration
+			void				ConfigureCompositor(int32 width, int32 height,
+									color_space format);
+			void				UpdateCompositorState(
+									const std::vector<WindowSnapshot>& snapshots,
+									const rgb_color& background);
+			void				PresentBuffer(RenderingBuffer* buffer,
+									const BRegion& dirty);
 
 protected:
 	virtual	void				_CopyBackToFront(/*const*/ BRegion& region);
@@ -244,8 +265,33 @@ protected:
 			BRect				fTrackingRect;
 
 			int					fVGADevice;
+			ObjectDeleter<PresentQueue>
+								fPresentQueue;
+			ObjectDeleter<Compositor>
+								fCompositor;
+			std::vector<WindowSnapshot>
+								fWindowSnapshots;
+			rgb_color			fCompositorBackground;
+			int64				fCompositorFrameCounter;
+			int64				fCompositorLogEveryN;
+			BRegion				fPendingInvalidate;
+			BLocker				fPresentInvalidateLock;
+			thread_id			fPresentThread;
+			sem_id				fPresentSemaphore;
+			volatile int32		fPresentScheduled;
+			volatile int32		fPresentThreadRunning;
+			volatile int32		fPendingInvalidations;
+			int64				fPresentCounter;
+			bigtime_t			fPresentLogTime;
 
 private:
+			status_t			_StartPresentThread();
+			void				_StopPresentThread();
+			void				_SchedulePresent();
+			void				_ProcessPendingInvalidate();
+			bool				_HasPendingInvalidate();
+	static	status_t			_PresentThreadEntry(void* data);
+
 			BList				fListeners;
 };
 

@@ -369,6 +369,9 @@ enum {
 	AS_VIEW_CLIP_TO_RECT,
 	AS_VIEW_CLIP_TO_SHAPE,
 
+	// internal debug
+	AS_INTERNAL_SET_WINDOW_ALPHA = 'wAlp',
+
 	AS_LAST_CODE
 };
 

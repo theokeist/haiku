@@ -216,6 +216,10 @@ public:
 			void				SetWindowFlags(Window* window, uint32 flags);
 			void				SetWindowTitle(Window* window,
 									const char* title);
+			void				SetAlphaDebugEnabled(bool enabled);
+			bool				IsAlphaDebugEnabled() const
+									{ return fAlphaDebugEnabled; }
+			bool				HandleAlphaDebugWheel(const BMessage& message);
 
 			Window*				FocusWindow() const { return fFocus; }
 			Window*				FrontWindow() const { return fFront; }
@@ -377,6 +381,7 @@ private:
 			int32				fViewUnderMouse;
 			BPoint				fLastMousePosition;
 			int32				fLastMouseButtons;
+			bool				fAlphaDebugEnabled;
 
 			Window*				fFocus;
 			Window*				fFront;

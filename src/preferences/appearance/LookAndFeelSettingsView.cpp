@@ -22,7 +22,9 @@
 #include <Button.h>
 #include <Catalog.h>
 #include <CheckBox.h>
+#include <Directory.h>
 #include <File.h>
+#include <FindDirectory.h>
 #include <InterfaceDefs.h>
 #include <InterfacePrivate.h>
 #include <LayoutBuilder.h>
@@ -59,6 +61,7 @@ static const int32 kMsgDoubleScrollBarArrows = 'dsba';
 
 static const int32 kMsgArrowStyleSingle = 'mass';
 static const int32 kMsgArrowStyleDouble = 'masd';
+static const int32 kMsgAlphaDebugEnabled = 'adbg';
 
 static const bool kDefaultDoubleScrollBarArrowsSetting = false;
 
@@ -77,14 +80,19 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 	fControlLookMenu(NULL),
 	fArrowStyleSingle(NULL),
 	fArrowStyleDouble(NULL),
+	fAlphaDebugCheckBox(NULL),
 	fSavedDecor(NULL),
 	fCurrentDecor(NULL),
 	fSavedControlLook(NULL),
 	fCurrentControlLook(NULL),
-	fSavedDoubleArrowsValue(_DoubleScrollBarArrows())
+	fSavedDoubleArrowsValue(_DoubleScrollBarArrows()),
+	fSavedAlphaDebugEnabled(false),
+	fCurrentAlphaDebugEnabled(false)
 {
 	fCurrentDecor = fDecorUtility.CurrentDecorator()->ShortcutName();
 	fSavedDecor = fCurrentDecor;
+	fCurrentAlphaDebugEnabled = _AlphaDebugEnabled();
+	fSavedAlphaDebugEnabled = fCurrentAlphaDebugEnabled;
 
 	// Decorator menu
 	_BuildDecorMenu();
@@ -115,6 +123,9 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 		new BMessage(kMsgArrowStyleSingle));
 	fArrowStyleDouble = new FakeScrollBar(true, true,
 		new BMessage(kMsgArrowStyleDouble));
+	fAlphaDebugCheckBox = new BCheckBox("alpha_debug_controls",
+		B_TRANSLATE("Enable alpha debug controls"),
+		new BMessage(kMsgAlphaDebugEnabled));
 
 	BView* arrowStyleView;
 	arrowStyleView = BLayoutBuilder::Group<>()
@@ -148,7 +159,8 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 		.Add(fControlLookInfoButton, 2, 1)
 		.Add(scrollBarLabel, 0, 2)
 		.Add(arrowStyleBox, 1, 2)
-		.AddGlue(0, 3)
+		.Add(fAlphaDebugCheckBox, 0, 3, 3)
+		.AddGlue(0, 4)
 		.SetInsets(B_USE_WINDOW_SPACING);
 
 	// TODO : Decorator Preview Image?
@@ -174,11 +186,15 @@ LookAndFeelSettingsView::AttachedToWindow()
 	fControlLookInfoButton->SetTarget(this);
 	fArrowStyleSingle->SetTarget(this);
 	fArrowStyleDouble->SetTarget(this);
+	fAlphaDebugCheckBox->SetTarget(this);
 
 	if (fSavedDoubleArrowsValue)
 		fArrowStyleDouble->SetValue(B_CONTROL_ON);
 	else
 		fArrowStyleSingle->SetValue(B_CONTROL_ON);
+
+	if (fCurrentAlphaDebugEnabled)
+		fAlphaDebugCheckBox->SetValue(B_CONTROL_ON);
 }
 
 
@@ -269,6 +285,12 @@ LookAndFeelSettingsView::MessageReceived(BMessage* message)
 		case kMsgArrowStyleDouble:
 			_SetDoubleScrollBarArrows(true);
 			break;
+		case kMsgAlphaDebugEnabled:
+		{
+			bool enabled = fAlphaDebugCheckBox->Value() == B_CONTROL_ON;
+			_SetAlphaDebugEnabled(enabled);
+			break;
+		}
 
 		default:
 			BView::MessageReceived(message);
@@ -429,12 +451,76 @@ LookAndFeelSettingsView::_SetDoubleScrollBarArrows(bool doubleArrows)
 }
 
 
+status_t
+LookAndFeelSettingsView::_AlphaDebugSettingsPath(BPath& path) const
+{
+	status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
+	if (status < B_OK)
+		return status;
+
+	status = path.Append("system/app_server");
+	if (status < B_OK)
+		return status;
+
+	status = create_directory(path.Path(), 0755);
+	if (status < B_OK)
+		return status;
+
+	return path.Append("alpha_debug");
+}
+
+
+bool
+LookAndFeelSettingsView::_AlphaDebugEnabled() const
+{
+	BPath path;
+	if (_AlphaDebugSettingsPath(path) != B_OK)
+		return false;
+
+	BFile file(path.Path(), B_READ_ONLY);
+	if (file.InitCheck() != B_OK)
+		return false;
+
+	BMessage settings;
+	if (settings.Unflatten(&file) != B_OK)
+		return false;
+
+	return settings.GetBool("enabled", false);
+}
+
+
+void
+LookAndFeelSettingsView::_SetAlphaDebugEnabled(bool enabled)
+{
+	if (fCurrentAlphaDebugEnabled == enabled)
+		return;
+
+	BPath path;
+	if (_AlphaDebugSettingsPath(path) != B_OK)
+		return;
+
+	BFile file(path.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	if (file.InitCheck() != B_OK)
+		return;
+
+	BMessage settings;
+	settings.AddBool("enabled", enabled);
+	if (settings.Flatten(&file) != B_OK)
+		return;
+
+	fCurrentAlphaDebugEnabled = enabled;
+	fAlphaDebugCheckBox->SetValue(enabled ? B_CONTROL_ON : B_CONTROL_OFF);
+	Window()->PostMessage(kMsgUpdate);
+}
+
+
 bool
 LookAndFeelSettingsView::IsDefaultable()
 {
 	return fCurrentDecor != fDecorUtility.DefaultDecorator()->ShortcutName()
 		|| fCurrentControlLook.Length() != 0
-		|| _DoubleScrollBarArrows() != false;
+		|| _DoubleScrollBarArrows() != false
+		|| fCurrentAlphaDebugEnabled != false;
 }
 
 
@@ -444,6 +530,7 @@ LookAndFeelSettingsView::SetDefaults()
 	_SetDecor(fDecorUtility.DefaultDecorator());
 	_SetControlLook(BString(""));
 	_SetDoubleScrollBarArrows(false);
+	_SetAlphaDebugEnabled(false);
 }
 
 
@@ -452,7 +539,8 @@ LookAndFeelSettingsView::IsRevertable()
 {
 	return fCurrentDecor != fSavedDecor
 		|| fCurrentControlLook != fSavedControlLook
-		|| _DoubleScrollBarArrows() != fSavedDoubleArrowsValue;
+		|| _DoubleScrollBarArrows() != fSavedDoubleArrowsValue
+		|| fCurrentAlphaDebugEnabled != fSavedAlphaDebugEnabled;
 }
 
 
@@ -463,5 +551,6 @@ LookAndFeelSettingsView::Revert()
 		_SetDecor(fSavedDecor);
 		_SetControlLook(fSavedControlLook);
 		_SetDoubleScrollBarArrows(fSavedDoubleArrowsValue);
+		_SetAlphaDebugEnabled(fSavedAlphaDebugEnabled);
 	}
 }

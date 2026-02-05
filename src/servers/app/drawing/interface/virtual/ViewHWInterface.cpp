@@ -403,7 +403,8 @@ CardWindow::Invalidate(const BRect& frame)
 ViewHWInterface::ViewHWInterface()
 	:
 	HWInterface(),
-	fBackBuffer(NULL),
+	fBackBufferIndex(0),
+	fBackBufferCount(0),
 	fFrontBuffer(NULL),
 	fWindow(NULL)
 {
@@ -446,7 +447,7 @@ ViewHWInterface::SetMode(const display_mode& mode)
 
 	status_t ret = B_OK;
 	// prevent from doing the unnecessary
-	if (fBackBuffer.IsSet() && fFrontBuffer.IsSet()
+	if (fBackBufferCount > 0 && fFrontBuffer.IsSet()
 		&& fDisplayMode.virtual_width == mode.virtual_width
 		&& fDisplayMode.virtual_height == mode.virtual_height
 		&& fDisplayMode.space == mode.space)
@@ -514,7 +515,10 @@ ViewHWInterface::SetMode(const display_mode& mode)
 
 		// free and reallocate the bitmaps while the window is locked,
 		// so that the view does not accidentally draw a freed bitmap
-		fBackBuffer.Unset();
+		for (int32 i = 0; i < 3; i++)
+			fBackBuffers[i].Unset();
+		fBackBufferIndex = 0;
+		fBackBufferCount = 0;
 		fFrontBuffer.Unset();
 
 		// NOTE: backbuffer is always B_RGBA32, this simplifies the
@@ -543,13 +547,19 @@ ViewHWInterface::SetMode(const display_mode& mode)
 			// backbuffer is always B_RGBA32
 			// since we override IsDoubleBuffered(), the drawing buffer
 			// is in effect also always B_RGBA32.
-			BBitmap* backBitmap = new BBitmap(frame, 0, B_RGBA32);
-			fBackBuffer.SetTo(new BBitmapBuffer(backBitmap));
+			for (int32 i = 0; i < 3; i++) {
+				BBitmap* backBitmap = new BBitmap(frame, 0, B_RGBA32);
+				fBackBuffers[i].SetTo(new BBitmapBuffer(backBitmap));
 
-			err = fBackBuffer->InitCheck();
-			if (err < B_OK) {
-				fBackBuffer.Unset();
-				ret = err;
+				err = fBackBuffers[i]->InitCheck();
+				if (err < B_OK) {
+					fBackBuffers[i].Unset();
+					if (fBackBufferCount == 0)
+						ret = err;
+					break;
+				}
+
+				fBackBufferCount++;
 			}
 		}
 
@@ -558,8 +568,9 @@ ViewHWInterface::SetMode(const display_mode& mode)
 		if (ret >= B_OK) {
 			// clear out buffers, alpha is 255 this way
 			// TODO: maybe this should handle different color spaces in different ways
-			if (fBackBuffer.IsSet())
-				memset(fBackBuffer->Bits(), 255, fBackBuffer->BitsLength());
+			for (int32 i = 0; i < fBackBufferCount; i++) {
+				memset(fBackBuffers[i]->Bits(), 255, fBackBuffers[i]->BitsLength());
+			}
 			memset(fFrontBuffer->Bits(), 255, fFrontBuffer->BitsLength());
 
 			// change the window size and update the bitmap used for drawing
@@ -779,7 +790,10 @@ ViewHWInterface::FrontBuffer() const
 RenderingBuffer*
 ViewHWInterface::BackBuffer() const
 {
-	return fBackBuffer.Get();
+	if (fBackBufferCount == 0)
+		return NULL;
+
+	return fBackBuffers[fBackBufferIndex].Get();
 }
 
 
@@ -787,9 +801,28 @@ bool
 ViewHWInterface::IsDoubleBuffered() const
 {
 	if (fFrontBuffer.IsSet())
-		return fBackBuffer.IsSet();
+		return fBackBufferCount > 0;
 
 	return false;
+}
+
+
+bool
+ViewHWInterface::SupportsTripleBuffering() const
+{
+	return fBackBufferCount >= 3;
+}
+
+
+void
+ViewHWInterface::SwapBackBuffers()
+{
+	if (fBackBufferCount < 2)
+		return;
+
+	AutoWriteLocker _(this);
+	fBackBufferIndex = (fBackBufferIndex + 1) % fBackBufferCount;
+	_NotifyFrameBufferChanged();
 }
 
 

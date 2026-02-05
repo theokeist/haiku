@@ -101,6 +101,11 @@ Screen::SetMode(const display_mode& mode)
 
 	gBitmapManager->ResumeOverlays();
 
+	if (status >= B_OK) {
+		fHWInterface->ConfigureCompositor(mode.virtual_width,
+			mode.virtual_height, B_RGBA32);
+	}
+
 	return status;
 }
 

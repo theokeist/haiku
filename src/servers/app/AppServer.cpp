@@ -15,9 +15,14 @@
 #include <syslog.h>
 
 #include <AutoDeleter.h>
+#include <Directory.h>
+#include <Entry.h>
+#include <File.h>
+#include <FindDirectory.h>
 #include <LaunchRoster.h>
 #include <PortLink.h>
 #include <RosterPrivate.h>
+#include <TokenSpace.h>
 
 #include "BitmapManager.h"
 #include "Desktop.h"
@@ -25,6 +30,9 @@
 #include "InputManager.h"
 #include "ScreenManager.h"
 #include "ServerProtocol.h"
+#include "ServerWindow.h"
+
+static const int32 kMsgAlphaDebugPoll = 'adpl';
 
 
 //#define DEBUG_SERVER
@@ -52,7 +60,10 @@ AppServer::AppServer(status_t* status)
 	:
 	SERVER_BASE("application/x-vnd.Haiku-app_server", "picasso", -1, false,
 		status),
-	fDesktopLock("AppServerDesktopLock")
+	fDesktopLock("AppServerDesktopLock"),
+	fAlphaDebugRunner(NULL),
+	fAlphaDebugEnabled(false),
+	fAlphaDebugSettingsMTime(0)
 {
 	openlog("app_server", 0, LOG_DAEMON);
 
@@ -85,6 +96,10 @@ AppServer::AppServer(status_t* status)
 	BMessage request(kMsgAppServerStarted);
 	BRoster::Private().SendTo(&request, NULL, false);
 #endif
+
+	_UpdateAlphaDebugSetting(true);
+	fAlphaDebugRunner = new(std::nothrow) BMessageRunner(BMessenger(this),
+		new BMessage(kMsgAlphaDebugPoll), 1000000);
 }
 
 
@@ -93,6 +108,7 @@ AppServer::AppServer(status_t* status)
 */
 AppServer::~AppServer()
 {
+	delete fAlphaDebugRunner;
 	delete gBitmapManager;
 
 	gScreenManager->Lock();
@@ -109,6 +125,26 @@ void
 AppServer::MessageReceived(BMessage* message)
 {
 	switch (message->what) {
+		case kMsgAlphaDebugPoll:
+			_UpdateAlphaDebugSetting(false);
+			break;
+
+		case AS_INTERNAL_SET_WINDOW_ALPHA:
+		{
+			int32 windowToken = message->GetInt32("window", B_NULL_TOKEN);
+			float alpha = message->GetFloat("alpha", 1.0f);
+
+			BAutolock tokenLocker(BPrivate::gDefaultTokens);
+			ServerWindow* window = NULL;
+			if (windowToken != B_NULL_TOKEN
+				&& BPrivate::gDefaultTokens.GetToken(windowToken,
+					B_SERVER_TOKEN, (void**)&window) == B_OK
+				&& window != NULL) {
+				window->SetAlpha(alpha);
+			}
+			break;
+		}
+
 		case AS_GET_DESKTOP:
 		{
 			Desktop* desktop = NULL;
@@ -147,6 +183,69 @@ AppServer::MessageReceived(BMessage* message)
 			STRACE(("AppServer received unexpected code %" B_PRId32 "\n",
 				message->what));
 			break;
+	}
+}
+
+
+status_t
+AppServer::_AlphaDebugSettingsPath(BPath& path) const
+{
+	status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
+	if (status < B_OK)
+		return status;
+
+	status = path.Append("system/app_server");
+	if (status < B_OK)
+		return status;
+
+	status = create_directory(path.Path(), 0755);
+	if (status < B_OK)
+		return status;
+
+	return path.Append("alpha_debug");
+}
+
+
+void
+AppServer::_UpdateAlphaDebugSetting(bool force)
+{
+	BPath path;
+	if (_AlphaDebugSettingsPath(path) != B_OK)
+		return;
+
+	BEntry entry(path.Path());
+	time_t modified = 0;
+	bool enabled = false;
+	if (entry.Exists()) {
+		entry.GetModificationTime(&modified);
+		if (!force && modified == fAlphaDebugSettingsMTime)
+			return;
+
+		BFile file(path.Path(), B_READ_ONLY);
+		BMessage settings;
+		if (file.InitCheck() == B_OK && settings.Unflatten(&file) == B_OK)
+			enabled = settings.GetBool("enabled", false);
+	} else if (!force && fAlphaDebugSettingsMTime == 0 && !fAlphaDebugEnabled) {
+		return;
+	}
+
+	fAlphaDebugSettingsMTime = modified;
+	if (enabled == fAlphaDebugEnabled && !force)
+		return;
+
+	fAlphaDebugEnabled = enabled;
+	_ApplyAlphaDebugSetting(enabled);
+}
+
+
+void
+AppServer::_ApplyAlphaDebugSetting(bool enabled)
+{
+	BAutolock locker(fDesktopLock);
+	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
+		Desktop* desktop = fDesktops.ItemAt(i);
+		if (desktop != NULL)
+			desktop->SetAlphaDebugEnabled(enabled);
 	}
 }
 

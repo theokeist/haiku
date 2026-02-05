@@ -105,6 +105,10 @@ public:
 			::ServerWindow*		ServerWindow() const { return fWindow; }
 			::EventTarget&		EventTarget() const
 									{ return fWindow->EventTarget(); }
+			float				Alpha() const { return fAlpha; }
+			bool				HasAlpha() const { return fHasAlpha; }
+			void				SetAlpha(float alpha);
+			void				SetAlphaDebugEnabled(bool enabled);
 
 			bool				ReloadDecor();
 
@@ -339,6 +343,7 @@ protected:
 
 			void				_ObeySizeLimits();
 			void				_PropagatePosition();
+			void				_UpdateAlphaDebug();
 
 			BString				fTitle;
 			// TODO: no fp rects anywhere
@@ -374,6 +379,8 @@ protected:
 			bool				fVisibleContentRegionValid : 1;
 			bool				fContentRegionValid : 1;
 			bool				fEffectiveDrawingRegionValid : 1;
+			bool				fHasAlpha : 1;
+			bool				fAlphaDebugEnabled : 1;
 
 			::RegionPool		fRegionPool;
 
@@ -386,6 +393,7 @@ protected:
 			ObjectDeleter<DrawingEngine>
 								fDrawingEngine;
 			::Desktop*			fDesktop;
+			float				fAlpha;
 
 			// The synchronization, which client drawing commands
 			// belong to the redraw of which dirty region is handled

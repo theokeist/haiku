@@ -103,6 +103,7 @@ public:
 			void				RequestRedraw();
 
 			void				GetInfo(window_info& info);
+			void				SetAlpha(float alpha);
 
 			void				HandleDirectConnection(int32 bufferState,
 									int32 driverState = 0);

@@ -15,8 +15,10 @@
 #include <Locker.h>
 #include <ObjectList.h>
 #include <OS.h>
+#include <Path.h>
 #include <String.h>
 #include <Window.h>
+#include <MessageRunner.h>
 
 #include "MessageLooper.h"
 #include "ServerConfig.h"
@@ -51,10 +53,16 @@ private:
 									const char* targetScreen);
 
 			void				_LaunchInputServer();
+			void				_UpdateAlphaDebugSetting(bool force);
+			status_t			_AlphaDebugSettingsPath(BPath& path) const;
+			void				_ApplyAlphaDebugSetting(bool enabled);
 
 private:
 			BObjectList<Desktop> fDesktops;
 			BLocker				fDesktopLock;
+			BMessageRunner*		fAlphaDebugRunner;
+			bool				fAlphaDebugEnabled;
+			time_t				fAlphaDebugSettingsMTime;
 };
 
 
