@@ -39,8 +39,8 @@ if [ FIsBuildFeatureEnabled fontconfig ] {
 	UseBuildFeatureHeaders fontconfig ;
 	Includes [ FGristFiles AppServer.cpp BitmapManager.cpp Canvas.cpp
 	ClientMemoryAllocator.cpp Desktop.cpp DesktopSettings.cpp
-	Compositor.cpp DrawState.cpp DrawingEngine.cpp Layer.cpp
-	PictureBoundingBoxPlayer.cpp PresentQueue.cpp
+	DrawState.cpp DrawingEngine.cpp Layer.cpp
+	PictureBoundingBoxPlayer.cpp
 	ServerApp.cpp ServerBitmap.cpp ServerCursor.cpp ServerFont.cpp
 	ServerPicture.cpp ServerWindow.cpp View.cpp Window.cpp WorkspacesView.cpp
 	$(decorator_src) $(font_src) ]
@@ -70,6 +70,7 @@ Application app_server :
 	DesktopListener.cpp
 	DesktopSettings.cpp
 	DirectWindowInfo.cpp
+	Compositor.cpp
 	DrawState.cpp
 	EventDispatcher.cpp
 	EventStream.cpp
@@ -82,6 +83,7 @@ Application app_server :
 	OffscreenServerWindow.cpp
 	OffscreenWindow.cpp
 	PictureBoundingBoxPlayer.cpp
+	PresentQueue.cpp
 	ProfileMessageSupport.cpp
 	RGBColor.cpp
 	RegionPool.cpp
