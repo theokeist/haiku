@@ -9,8 +9,9 @@
 #include <Locker.h>
 #include <Region.h>
 
+#include "MallocBuffer.h"
+
 class HWInterface;
-class MallocBuffer;
 class RenderingBuffer;
 
 class PresentQueue {
