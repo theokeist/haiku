@@ -1,0 +1,7 @@
+SubDir HAIKU_TOP src apps alphablenddemo ;
+
+Application AlphaBlendDemo :
+	AlphaBlendDemo.cpp
+	: be
+	: AlphaBlendDemo.rdef
+;

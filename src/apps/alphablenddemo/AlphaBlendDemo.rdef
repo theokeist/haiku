@@ -1,0 +1,13 @@
+resource app_signature "application/x-vnd.haiku-AlphaBlendDemo";
+
+resource app_flags B_SINGLE_LAUNCH;
+
+resource app_version {
+	major 0,
+	minor 1,
+	micro 0,
+	pre 0,
+	revision 1,
+	short_info "Alpha Blend Demo",
+	long_info "Alpha Blend Demo\nA simple alpha blending playground."
+};
