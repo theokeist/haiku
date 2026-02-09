@@ -89,6 +89,7 @@ SYSTEM_PREFERENCES += [ FFilterByBuildFeatures
 ] ;
 
 SYSTEM_DEMOS += [ FFilterByBuildFeatures
+	AlphaBlendDemo
 	Chart
 	Clock
 	Cortex@expat

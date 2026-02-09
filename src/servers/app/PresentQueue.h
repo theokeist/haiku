@@ -6,11 +6,13 @@
 #define PRESENT_QUEUE_H
 
 #include <AutoDeleter.h>
+#include <Autolock.h>
 #include <Locker.h>
 #include <Region.h>
 
+#include "MallocBuffer.h"
+
 class HWInterface;
-class MallocBuffer;
 class RenderingBuffer;
 
 class PresentQueue {

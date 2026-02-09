@@ -278,9 +278,9 @@ protected:
 			BLocker				fPresentInvalidateLock;
 			thread_id			fPresentThread;
 			sem_id				fPresentSemaphore;
-			volatile int32		fPresentScheduled;
-			volatile int32		fPresentThreadRunning;
-			volatile int32		fPendingInvalidations;
+			int32				fPresentScheduled;
+			int32				fPresentThreadRunning;
+			int32				fPendingInvalidations;
 			int64				fPresentCounter;
 			bigtime_t			fPresentLogTime;
 

@@ -98,6 +98,13 @@ Compositor::_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
 	if (dst.ColorSpace() != B_RGBA32 && dst.ColorSpace() != B_RGB32)
 		return;
 
+	BRegion clipped(dirty);
+	BRegion clipBounds;
+	clipBounds.Set((BRect)dst.Bounds());
+	clipped.IntersectWith(&clipBounds);
+	if (clipped.CountRects() == 0)
+		return;
+
 	uint32 color = (uint32(255) << 24)
 		| (uint32(background.red) << 16)
 		| (uint32(background.green) << 8)
@@ -106,14 +113,16 @@ Compositor::_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
 	uint8* dstBits = (uint8*)dst.Bits();
 	uint32 dstBPR = dst.BytesPerRow();
 
-	int32 count = dirty.CountRects();
+	int32 count = clipped.CountRects();
 	for (int32 i = 0; i < count; i++) {
-		BRect rect = dirty.RectAt(i);
+		BRect rect = clipped.RectAt(i);
 		int32 left = (int32)rect.left;
 		int32 right = (int32)rect.right;
 		int32 top = (int32)rect.top;
 		int32 bottom = (int32)rect.bottom;
 		int32 width = right - left + 1;
+		if (width <= 0 || bottom < top)
+			continue;
 
 		for (int32 y = top; y <= bottom; y++) {
 			uint32* dstRow = (uint32*)(dstBits + y * dstBPR + left * 4);
@@ -133,20 +142,32 @@ Compositor::_CopyRegion(RenderingBuffer& dst, RenderingBuffer& src,
 	if (src.ColorSpace() != B_RGBA32 && src.ColorSpace() != B_RGB32)
 		return;
 
+	BRegion clipped(region);
+	BRegion dstBounds;
+	dstBounds.Set((BRect)dst.Bounds());
+	clipped.IntersectWith(&dstBounds);
+	BRegion srcBounds;
+	srcBounds.Set((BRect)src.Bounds());
+	clipped.IntersectWith(&srcBounds);
+	if (clipped.CountRects() == 0)
+		return;
+
 	uint8* dstBits = (uint8*)dst.Bits();
 	uint8* srcBits = (uint8*)src.Bits();
 	uint32 dstBPR = dst.BytesPerRow();
 	uint32 srcBPR = src.BytesPerRow();
 
-	int32 count = region.CountRects();
+	int32 count = clipped.CountRects();
 	for (int32 i = 0; i < count; i++) {
-		BRect rect = region.RectAt(i);
+		BRect rect = clipped.RectAt(i);
 		int32 left = (int32)rect.left;
 		int32 right = (int32)rect.right;
 		int32 top = (int32)rect.top;
 		int32 bottom = (int32)rect.bottom;
 		int32 width = right - left + 1;
 		int32 bytes = width * 4;
+		if (width <= 0 || bottom < top)
+			continue;
 
 		for (int32 y = top; y <= bottom; y++) {
 			uint8* dstRow = dstBits + y * dstBPR + left * 4;
@@ -172,6 +193,16 @@ Compositor::_BlendRegion(RenderingBuffer& dst, RenderingBuffer& src,
 	if (alpha > 1.0f)
 		alpha = 1.0f;
 
+	BRegion clipped(region);
+	BRegion dstBounds;
+	dstBounds.Set((BRect)dst.Bounds());
+	clipped.IntersectWith(&dstBounds);
+	BRegion srcBounds;
+	srcBounds.Set((BRect)src.Bounds());
+	clipped.IntersectWith(&srcBounds);
+	if (clipped.CountRects() == 0)
+		return;
+
 	uint8* dstBits = (uint8*)dst.Bits();
 	uint8* srcBits = (uint8*)src.Bits();
 	uint32 dstBPR = dst.BytesPerRow();
@@ -179,14 +210,16 @@ Compositor::_BlendRegion(RenderingBuffer& dst, RenderingBuffer& src,
 	uint8 alphaByte = (uint8)(alpha * 255.0f);
 	uint8 invAlpha = 255 - alphaByte;
 
-	int32 count = region.CountRects();
+	int32 count = clipped.CountRects();
 	for (int32 i = 0; i < count; i++) {
-		BRect rect = region.RectAt(i);
+		BRect rect = clipped.RectAt(i);
 		int32 left = (int32)rect.left;
 		int32 right = (int32)rect.right;
 		int32 top = (int32)rect.top;
 		int32 bottom = (int32)rect.bottom;
 		int32 width = right - left + 1;
+		if (width <= 0 || bottom < top)
+			continue;
 
 		for (int32 y = top; y <= bottom; y++) {
 			uint8* dstRow = dstBits + y * dstBPR + left * 4;
