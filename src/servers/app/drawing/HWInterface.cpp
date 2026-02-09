@@ -472,6 +472,18 @@ HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 {
 	fWindowSnapshots = snapshots;
 	fCompositorBackground = background;
+
+	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
+		RenderingBuffer* buffer = DrawingBuffer();
+		if (buffer != NULL) {
+			BAutolock _(fPresentInvalidateLock);
+			BRegion fullBounds;
+			fullBounds.Set((BRect)buffer->Bounds());
+			fPendingInvalidate.Include(&fullBounds);
+		}
+		atomic_add(&fPendingInvalidations, 1);
+		_SchedulePresent();
+	}
 }
 
 
