@@ -470,13 +470,13 @@ void
 HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 	const rgb_color& background)
 {
+	BAutolock _(fPresentInvalidateLock);
 	fWindowSnapshots = snapshots;
 	fCompositorBackground = background;
 
 	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
 		RenderingBuffer* buffer = DrawingBuffer();
 		if (buffer != NULL) {
-			BAutolock _(fPresentInvalidateLock);
 			BRegion fullBounds;
 			fullBounds.Set((BRect)buffer->Bounds());
 			fPendingInvalidate.Include(&fullBounds);
@@ -490,13 +490,17 @@ HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 void
 HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
 {
-	if (buffer == NULL || FrontBuffer() == NULL)
+	RenderingBuffer* front = FrontBuffer();
+	if (buffer == NULL || front == NULL)
 		return;
 
 	BRegion region(dirty);
 	BRegion clipRegion;
 	clipRegion.Set((BRect)buffer->Bounds());
 	region.IntersectWith(&clipRegion);
+	BRegion frontClip;
+	frontClip.Set((BRect)front->Bounds());
+	region.IntersectWith(&frontClip);
 	if (region.CountRects() == 0)
 		return;
 
@@ -514,7 +518,7 @@ HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
 		_CopyToFront(srcOffset, srcBPR, r.left, r.top, r.right, r.bottom);
 	}
 
-	_DrawCursor(IntRect(region.Frame()));
+	_DrawCursor(_CursorFrame());
 
 	if (cursorLocked)
 		fFloatingOverlaysLock.Unlock();
@@ -581,12 +585,16 @@ void
 HWInterface::_ProcessPendingInvalidate()
 {
 	BRegion pending;
+	std::vector<WindowSnapshot> snapshots;
+	rgb_color background;
 	{
 		BAutolock _(fPresentInvalidateLock);
 		if (fPendingInvalidate.CountRects() == 0)
 			return;
 		pending = fPendingInvalidate;
 		fPendingInvalidate.MakeEmpty();
+		snapshots = fWindowSnapshots;
+		background = fCompositorBackground;
 	}
 
 	if (!fPresentQueue.IsSet() || !fCompositor.IsSet())
@@ -603,7 +611,7 @@ HWInterface::_ProcessPendingInvalidate()
 	}
 
 	ComposeStats stats = fCompositor->Compose(*renderTarget, *source,
-		pending, fWindowSnapshots, fCompositorBackground);
+		pending, snapshots, background);
 
 	fPresentQueue->Submit(renderTarget, pending);
 	bigtime_t presentTime = fPresentQueue->PresentNext(*this, true);

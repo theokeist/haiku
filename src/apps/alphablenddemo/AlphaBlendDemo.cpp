@@ -14,15 +14,18 @@ namespace {
 
 const char* kAppSignature = "application/x-vnd.haiku-AlphaBlendDemo";
 const uint32 kMsgAlphaChanged = 'alch';
+const uint32 kMsgOffsetChanged = 'alof';
 
 class AlphaBlendView : public BView {
 public:
 	AlphaBlendView()
 		:
-		BView("alpha blend view", B_WILL_DRAW | B_FULL_UPDATE_ON_RESIZE),
-		fAlpha(0.6f)
+		BView("alpha blend view",
+			B_WILL_DRAW | B_FULL_UPDATE_ON_RESIZE | B_TRANSPARENT_BACKGROUND),
+		fAlpha(0.6f),
+		fBackgroundOffset(0.0f)
 	{
-		SetViewColor(ui_color(B_PANEL_BACKGROUND_COLOR));
+		SetViewColor(B_TRANSPARENT_COLOR);
 	}
 
 	void SetAlpha(float alpha)
@@ -31,16 +34,36 @@ public:
 		Invalidate();
 	}
 
+	void SetBackgroundOffset(float offset)
+	{
+		fBackgroundOffset = offset;
+		Invalidate();
+	}
+
 	void Draw(BRect updateRect) override
 	{
 		BRect bounds = Bounds();
-		SetLowColor(ui_color(B_PANEL_BACKGROUND_COLOR));
-		FillRect(updateRect, B_SOLID_LOW);
+		SetDrawingMode(B_OP_COPY);
+		SetHighColor(B_TRANSPARENT_COLOR);
+		FillRect(updateRect);
 
-		_DrawCheckerboard(bounds);
+		BRect checkerBounds = bounds;
+		checkerBounds.top += fBackgroundOffset;
+		if (checkerBounds.IsValid())
+			_DrawCheckerboard(checkerBounds);
 
 		SetDrawingMode(B_OP_ALPHA);
 		SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+
+		if (fBackgroundOffset > 0.0f) {
+			BRect gap(bounds.left, bounds.top, bounds.right,
+				bounds.top + fBackgroundOffset - 1.0f);
+			SetDrawingMode(B_OP_COPY);
+			SetHighColor(B_TRANSPARENT_COLOR);
+			FillRect(gap);
+			SetDrawingMode(B_OP_ALPHA);
+			SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
+		}
 
 		BRect backdrop(bounds.left + 20, bounds.top + 20,
 			bounds.right - 20, bounds.top + 140);
@@ -71,9 +94,12 @@ private:
 		const rgb_color light = {220, 220, 220, 255};
 		const rgb_color dark = {200, 200, 200, 255};
 
-		for (float y = bounds.top; y < bounds.bottom; y += cell) {
-			for (float x = bounds.left; x < bounds.right; x += cell) {
-				bool isDark = ((int)(x / cell) + (int)(y / cell)) % 2 == 0;
+		int32 startRow = (int32)(bounds.top / cell);
+		int32 startCol = (int32)(bounds.left / cell);
+		for (float y = bounds.top; y < bounds.bottom; y += cell, startRow++) {
+			int32 col = startCol;
+			for (float x = bounds.left; x < bounds.right; x += cell, col++) {
+				bool isDark = ((startRow + col) % 2) == 0;
 				SetHighColor(isDark ? dark : light);
 				FillRect(BRect(x, y, x + cell - 1, y + cell - 1));
 			}
@@ -81,6 +107,7 @@ private:
 	}
 
 	float fAlpha;
+	float fBackgroundOffset;
 };
 
 class AlphaBlendWindow : public BWindow {
@@ -91,16 +118,23 @@ public:
 			B_TITLED_WINDOW, B_QUIT_ON_WINDOW_CLOSE),
 		fBlendView(new AlphaBlendView()),
 		fSlider(new BSlider("alpha slider", "Alpha: 60%", new BMessage(kMsgAlphaChanged),
-			0, 100, B_HORIZONTAL))
+			0, 100, B_HORIZONTAL)),
+		fOffsetSlider(new BSlider("offset slider", "Background offset: 0",
+			new BMessage(kMsgOffsetChanged), 0, 200, B_HORIZONTAL))
 	{
 		fSlider->SetValue(60);
 		fSlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
 		fSlider->SetHashMarkCount(6);
 
+		fOffsetSlider->SetValue(0);
+		fOffsetSlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
+		fOffsetSlider->SetHashMarkCount(5);
+
 		BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
 			.SetInsets(10, 10, 10, 10)
 			.Add(fBlendView)
-			.Add(fSlider);
+			.Add(fSlider)
+			.Add(fOffsetSlider);
 	}
 
 	void MessageReceived(BMessage* message) override
@@ -114,6 +148,14 @@ public:
 			fSlider->SetLabel(label.String());
 			return;
 		}
+		if (message->what == kMsgOffsetChanged) {
+			int32 value = fOffsetSlider->Value();
+			fBlendView->SetBackgroundOffset((float)value);
+			BString label;
+			label.SetToFormat("Background offset: %" B_PRId32, value);
+			fOffsetSlider->SetLabel(label.String());
+			return;
+		}
 
 		BWindow::MessageReceived(message);
 	}
@@ -121,6 +163,7 @@ public:
 private:
 	AlphaBlendView* fBlendView;
 	BSlider* fSlider;
+	BSlider* fOffsetSlider;
 };
 
 class AlphaBlendApp : public BApplication {
