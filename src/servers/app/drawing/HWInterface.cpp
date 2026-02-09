@@ -9,6 +9,7 @@
 
 #include "HWInterface.h"
 
+#include <Autolock.h>
 #include <OS.h>
 #include <inttypes.h>
 #include <new>
@@ -46,6 +47,7 @@ HWInterfaceListener::~HWInterfaceListener()
 HWInterface::HWInterface()
 	:
 	MultiLocker("hw interface lock"),
+	fCursorAreaBackup(NULL),
 	fFloatingOverlaysLock("floating overlays lock"),
 	fCursor(NULL),
 	fDragBitmap(NULL),
@@ -55,11 +57,15 @@ HWInterface::HWInterface()
 	fCursorObscured(false),
 	fHardwareCursorEnabled(false),
 	fCursorLocation(0, 0),
+	fTrackingRect(),
 	fVGADevice(-1),
-	fListeners(20),
+	fPresentQueue(NULL),
+	fCompositor(NULL),
+	fWindowSnapshots(),
 	fCompositorBackground((rgb_color){0, 0, 0, 255}),
 	fCompositorFrameCounter(0),
 	fCompositorLogEveryN(120),
+	fPendingInvalidate(),
 	fPresentInvalidateLock("present invalidate lock"),
 	fPresentThread(-1),
 	fPresentSemaphore(-1),
@@ -67,7 +73,8 @@ HWInterface::HWInterface()
 	fPresentThreadRunning(0),
 	fPendingInvalidations(0),
 	fPresentCounter(0),
-	fPresentLogTime(0)
+	fPresentLogTime(0),
+	fListeners(20)
 {
 }
 
@@ -331,7 +338,9 @@ HWInterface::InvalidateRegion(const BRegion& region)
 
 		BRegion clipped(region);
 		IntRect bufferClip(backBuffer->Bounds());
-		clipped.IntersectWith((BRect)bufferClip);
+		BRegion clipRegion;
+		clipRegion.Set((BRect)bufferClip);
+		clipped.IntersectWith(&clipRegion);
 
 		if (clipped.CountRects() == 0)
 			return B_OK;
@@ -463,6 +472,18 @@ HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 {
 	fWindowSnapshots = snapshots;
 	fCompositorBackground = background;
+
+	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
+		RenderingBuffer* buffer = DrawingBuffer();
+		if (buffer != NULL) {
+			BAutolock _(fPresentInvalidateLock);
+			BRegion fullBounds;
+			fullBounds.Set((BRect)buffer->Bounds());
+			fPendingInvalidate.Include(&fullBounds);
+		}
+		atomic_add(&fPendingInvalidations, 1);
+		_SchedulePresent();
+	}
 }
 
 
@@ -473,7 +494,9 @@ HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
 		return;
 
 	BRegion region(dirty);
-	region.IntersectWith((BRect)buffer->Bounds());
+	BRegion clipRegion;
+	clipRegion.Set((BRect)buffer->Bounds());
+	region.IntersectWith(&clipRegion);
 	if (region.CountRects() == 0)
 		return;
 
