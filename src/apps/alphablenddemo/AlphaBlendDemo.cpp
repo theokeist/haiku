@@ -6,6 +6,7 @@
 #include <LayoutBuilder.h>
 #include <Messenger.h>
 #include <OS.h>
+#include <CheckBox.h>
 #include <Slider.h>
 #include <String.h>
 #include <View.h>
@@ -23,6 +24,7 @@ const char* kAppSignature = "application/x-vnd.haiku-AlphaBlendDemo";
 const uint32 kMsgAlphaChanged = 'alch';
 const uint32 kMsgOffsetChanged = 'alof';
 const uint32 kMsgWindowAlphaChanged = 'alwa';
+const uint32 kMsgLiveGlassChanged = 'algl';
 const int32 kNullWindowToken = -1;
 
 class AlphaBlendView : public BView {
@@ -32,7 +34,8 @@ public:
 		BView("alpha blend view",
 			B_WILL_DRAW | B_FULL_UPDATE_ON_RESIZE | B_TRANSPARENT_BACKGROUND),
 		fAlpha(0.6f),
-		fBackgroundOffset(0.0f)
+		fBackgroundOffset(0.0f),
+		fLiveGlassMode(false)
 	{
 		SetViewColor(B_TRANSPARENT_COLOR);
 	}
@@ -49,6 +52,12 @@ public:
 		Invalidate();
 	}
 
+	void SetLiveGlassMode(bool liveGlassMode)
+	{
+		fLiveGlassMode = liveGlassMode;
+		Invalidate();
+	}
+
 	void Draw(BRect updateRect) override
 	{
 		BRect bounds = Bounds();
@@ -56,15 +65,17 @@ public:
 		SetHighColor(B_TRANSPARENT_COLOR);
 		FillRect(updateRect);
 
-		BRect checkerBounds = bounds;
-		checkerBounds.top += fBackgroundOffset;
-		if (checkerBounds.IsValid())
-			_DrawCheckerboard(checkerBounds);
+		if (!fLiveGlassMode) {
+			BRect checkerBounds = bounds;
+			checkerBounds.top += fBackgroundOffset;
+			if (checkerBounds.IsValid())
+				_DrawCheckerboard(checkerBounds);
+		}
 
 		SetDrawingMode(B_OP_ALPHA);
 		SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
 
-		if (fBackgroundOffset > 0.0f) {
+		if (!fLiveGlassMode && fBackgroundOffset > 0.0f) {
 			BRect gap(bounds.left, bounds.top, bounds.right,
 				bounds.top + fBackgroundOffset - 1.0f);
 			SetDrawingMode(B_OP_COPY);
@@ -74,10 +85,12 @@ public:
 			SetBlendingMode(B_PIXEL_ALPHA, B_ALPHA_OVERLAY);
 		}
 
-		BRect backdrop(bounds.left + 20, bounds.top + 20,
-			bounds.right - 20, bounds.top + 140);
-		SetHighColor(60, 60, 60, (uint8)(fAlpha * 180.0f));
-		FillRoundRect(backdrop, 10, 10);
+		if (!fLiveGlassMode) {
+			BRect backdrop(bounds.left + 20, bounds.top + 20,
+				bounds.right - 20, bounds.top + 140);
+			SetHighColor(60, 60, 60, (uint8)(fAlpha * 180.0f));
+			FillRoundRect(backdrop, 10, 10);
+		}
 
 		BRect leftRect(bounds.left + 40, bounds.top + 40,
 			bounds.left + bounds.Width() * 0.6f, bounds.top + bounds.Height() * 0.6f);
@@ -90,9 +103,9 @@ public:
 		SetHighColor(80, 140, 255, (uint8)(fAlpha * 255.0f));
 		FillRoundRect(rightRect, 12, 12);
 
-		SetHighColor(30, 30, 30, 255);
+		SetHighColor(30, 30, 30, fLiveGlassMode ? 200 : 255);
 		SetDrawingMode(B_OP_OVER);
-		DrawString("Drag the slider to adjust alpha blending (shapes + background).",
+		DrawString("Drag sliders; enable live glass pane mode for real behind-window view.",
 			BPoint(bounds.left + 16, bounds.bottom - 16));
 	}
 
@@ -117,6 +130,7 @@ private:
 
 	float fAlpha;
 	float fBackgroundOffset;
+	bool fLiveGlassMode;
 };
 
 class AlphaBlendWindow : public BWindow {
@@ -132,6 +146,9 @@ public:
 			new BMessage(kMsgOffsetChanged), 0, 200, B_HORIZONTAL)),
 		fWindowAlphaSlider(new BSlider("window alpha slider", "Window alpha: 100%",
 			new BMessage(kMsgWindowAlphaChanged), 0, 100, B_HORIZONTAL)),
+		fLiveGlassCheckBox(new BCheckBox("live glass checkbox",
+			"Live glass pane mode (no checkerboard)",
+			new BMessage(kMsgLiveGlassChanged))),
 		fWindowToken(kNullWindowToken)
 	{
 		fSlider->SetValue(60);
@@ -147,12 +164,15 @@ public:
 		fWindowAlphaSlider->SetHashMarkCount(6);
 		fWindowAlphaSlider->SetLabel("Window alpha: 85%");
 
+		fLiveGlassCheckBox->SetValue(B_CONTROL_OFF);
+
 		BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
 			.SetInsets(10, 10, 10, 10)
 			.Add(fBlendView)
 			.Add(fSlider)
 			.Add(fOffsetSlider)
-			.Add(fWindowAlphaSlider);
+			.Add(fWindowAlphaSlider)
+			.Add(fLiveGlassCheckBox);
 	}
 
 	void MessageReceived(BMessage* message) override
@@ -180,6 +200,11 @@ public:
 			BString label;
 			label.SetToFormat("Window alpha: %" B_PRId32 "%%", value);
 			fWindowAlphaSlider->SetLabel(label.String());
+			return;
+		}
+		if (message->what == kMsgLiveGlassChanged) {
+			bool liveGlassMode = fLiveGlassCheckBox->Value() == B_CONTROL_ON;
+			fBlendView->SetLiveGlassMode(liveGlassMode);
 			return;
 		}
 
@@ -240,6 +265,7 @@ private:
 	BSlider* fSlider;
 	BSlider* fOffsetSlider;
 	BSlider* fWindowAlphaSlider;
+	BCheckBox* fLiveGlassCheckBox;
 	int32 fWindowToken;
 };
 
