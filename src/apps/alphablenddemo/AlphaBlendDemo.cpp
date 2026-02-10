@@ -4,10 +4,17 @@
  */
 #include <Application.h>
 #include <LayoutBuilder.h>
+#include <Messenger.h>
+#include <OS.h>
 #include <Slider.h>
 #include <String.h>
 #include <View.h>
 #include <Window.h>
+#include <WindowInfo.h>
+
+#include <string.h>
+
+#include <private/app/ServerProtocol.h>
 #include <inttypes.h>
 
 namespace {
@@ -15,6 +22,7 @@ namespace {
 const char* kAppSignature = "application/x-vnd.haiku-AlphaBlendDemo";
 const uint32 kMsgAlphaChanged = 'alch';
 const uint32 kMsgOffsetChanged = 'alof';
+const uint32 kMsgWindowAlphaChanged = 'alwa';
 
 class AlphaBlendView : public BView {
 public:
@@ -120,7 +128,10 @@ public:
 		fSlider(new BSlider("alpha slider", "Alpha: 60%", new BMessage(kMsgAlphaChanged),
 			0, 100, B_HORIZONTAL)),
 		fOffsetSlider(new BSlider("offset slider", "Background offset: 0",
-			new BMessage(kMsgOffsetChanged), 0, 200, B_HORIZONTAL))
+			new BMessage(kMsgOffsetChanged), 0, 200, B_HORIZONTAL)),
+		fWindowAlphaSlider(new BSlider("window alpha slider", "Window alpha: 100%",
+			new BMessage(kMsgWindowAlphaChanged), 0, 100, B_HORIZONTAL)),
+		fWindowToken(B_NULL_TOKEN)
 	{
 		fSlider->SetValue(60);
 		fSlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
@@ -130,11 +141,17 @@ public:
 		fOffsetSlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
 		fOffsetSlider->SetHashMarkCount(5);
 
+		fWindowAlphaSlider->SetValue(85);
+		fWindowAlphaSlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
+		fWindowAlphaSlider->SetHashMarkCount(6);
+		fWindowAlphaSlider->SetLabel("Window alpha: 85%");
+
 		BLayoutBuilder::Group<>(this, B_VERTICAL, 10)
 			.SetInsets(10, 10, 10, 10)
 			.Add(fBlendView)
 			.Add(fSlider)
-			.Add(fOffsetSlider);
+			.Add(fOffsetSlider)
+			.Add(fWindowAlphaSlider);
 	}
 
 	void MessageReceived(BMessage* message) override
@@ -156,14 +173,73 @@ public:
 			fOffsetSlider->SetLabel(label.String());
 			return;
 		}
+		if (message->what == kMsgWindowAlphaChanged) {
+			int32 value = fWindowAlphaSlider->Value();
+			_SetWindowAlpha(value / 100.0f);
+			BString label;
+			label.SetToFormat("Window alpha: %" B_PRId32 "%%", value);
+			fWindowAlphaSlider->SetLabel(label.String());
+			return;
+		}
 
 		BWindow::MessageReceived(message);
 	}
 
+	void ApplyInitialWindowAlpha()
+	{
+		_SetWindowAlpha(fWindowAlphaSlider->Value() / 100.0f);
+	}
+
 private:
+	void _SetWindowAlpha(float alpha)
+	{
+		if (fWindowToken == B_NULL_TOKEN)
+			fWindowToken = _ResolveWindowToken();
+		if (fWindowToken == B_NULL_TOKEN)
+			return;
+
+		BMessenger messenger("application/x-vnd.Haiku-app_server");
+		if (!messenger.IsValid())
+			return;
+
+		BMessage message(AS_INTERNAL_SET_WINDOW_ALPHA);
+		message.AddInt32("window", fWindowToken);
+		message.AddFloat("alpha", alpha);
+		messenger.SendMessage(&message);
+	}
+
+	int32 _ResolveWindowToken() const
+	{
+		team_info info;
+		if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
+			return B_NULL_TOKEN;
+
+		int32 count = 0;
+		int32* tokens = get_token_list(info.team, &count);
+		if (tokens == NULL)
+			return B_NULL_TOKEN;
+
+		int32 resolved = B_NULL_TOKEN;
+		for (int32 i = 0; i < count; i++) {
+			client_window_info* windowInfo = get_window_info(tokens[i]);
+			if (windowInfo != NULL && windowInfo->name[0] != '\0'
+				&& strcmp(windowInfo->name, Title()) == 0) {
+				resolved = tokens[i];
+				free(windowInfo);
+				break;
+			}
+			free(windowInfo);
+		}
+
+		free(tokens);
+		return resolved;
+	}
+
 	AlphaBlendView* fBlendView;
 	BSlider* fSlider;
 	BSlider* fOffsetSlider;
+	BSlider* fWindowAlphaSlider;
+	int32 fWindowToken;
 };
 
 class AlphaBlendApp : public BApplication {
@@ -178,6 +254,7 @@ public:
 	{
 		AlphaBlendWindow* window = new AlphaBlendWindow();
 		window->Show();
+		window->ApplyInitialWindowAlpha();
 	}
 };
 
