@@ -23,6 +23,7 @@ const char* kAppSignature = "application/x-vnd.haiku-AlphaBlendDemo";
 const uint32 kMsgAlphaChanged = 'alch';
 const uint32 kMsgOffsetChanged = 'alof';
 const uint32 kMsgWindowAlphaChanged = 'alwa';
+const int32 kNullWindowToken = -1;
 
 class AlphaBlendView : public BView {
 public:
@@ -131,7 +132,7 @@ public:
 			new BMessage(kMsgOffsetChanged), 0, 200, B_HORIZONTAL)),
 		fWindowAlphaSlider(new BSlider("window alpha slider", "Window alpha: 100%",
 			new BMessage(kMsgWindowAlphaChanged), 0, 100, B_HORIZONTAL)),
-		fWindowToken(B_NULL_TOKEN)
+		fWindowToken(kNullWindowToken)
 	{
 		fSlider->SetValue(60);
 		fSlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
@@ -193,9 +194,9 @@ public:
 private:
 	void _SetWindowAlpha(float alpha)
 	{
-		if (fWindowToken == B_NULL_TOKEN)
+		if (fWindowToken == kNullWindowToken)
 			fWindowToken = _ResolveWindowToken();
-		if (fWindowToken == B_NULL_TOKEN)
+		if (fWindowToken == kNullWindowToken)
 			return;
 
 		BMessenger messenger("application/x-vnd.Haiku-app_server");
@@ -212,14 +213,14 @@ private:
 	{
 		team_info info;
 		if (get_team_info(B_CURRENT_TEAM, &info) != B_OK)
-			return B_NULL_TOKEN;
+			return kNullWindowToken;
 
 		int32 count = 0;
 		int32* tokens = get_token_list(info.team, &count);
 		if (tokens == NULL)
-			return B_NULL_TOKEN;
+			return kNullWindowToken;
 
-		int32 resolved = B_NULL_TOKEN;
+		int32 resolved = kNullWindowToken;
 		for (int32 i = 0; i < count; i++) {
 			client_window_info* windowInfo = get_window_info(tokens[i]);
 			if (windowInfo != NULL && windowInfo->name[0] != '\0'
