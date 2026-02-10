@@ -3548,13 +3548,13 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 			if (window->IsHidden())
 				continue;
 
-			if (!dirtyRegion.Intersects(window->VisibleRegion().Frame()))
+			if (window->VisibleRegion().CountRects() == 0)
 				continue;
 
 			WindowSnapshot snapshot;
 			snapshot.visible = window->VisibleRegion();
 			snapshot.alpha = window->Alpha();
-			snapshot.opaqueFastPath = !window->HasAlpha();
+			snapshot.opaqueFastPath = false;
 			snapshots.push_back(snapshot);
 		}
 
