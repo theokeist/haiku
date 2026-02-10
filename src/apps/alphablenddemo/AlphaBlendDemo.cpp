@@ -10,7 +10,7 @@
 #include <String.h>
 #include <View.h>
 #include <Window.h>
-#include <WindowInfo.h>
+#include <interface/WindowInfo.h>
 
 #include <string.h>
 
