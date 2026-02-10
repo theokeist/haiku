@@ -208,7 +208,6 @@ Compositor::_BlendRegion(RenderingBuffer& dst, RenderingBuffer& src,
 	uint32 dstBPR = dst.BytesPerRow();
 	uint32 srcBPR = src.BytesPerRow();
 	uint8 alphaByte = (uint8)(alpha * 255.0f);
-	uint8 invAlpha = 255 - alphaByte;
 
 	int32 count = clipped.CountRects();
 	for (int32 i = 0; i < count; i++) {
@@ -225,12 +224,21 @@ Compositor::_BlendRegion(RenderingBuffer& dst, RenderingBuffer& src,
 			uint8* dstRow = dstBits + y * dstBPR + left * 4;
 			uint8* srcRow = srcBits + y * srcBPR + left * 4;
 			for (int32 x = 0; x < width; x++) {
-				dstRow[0] = ((dstRow[0] * invAlpha + 255) >> 8)
-					+ ((srcRow[0] * alphaByte + 255) >> 8);
-				dstRow[1] = ((dstRow[1] * invAlpha + 255) >> 8)
-					+ ((srcRow[1] * alphaByte + 255) >> 8);
-				dstRow[2] = ((dstRow[2] * invAlpha + 255) >> 8)
-					+ ((srcRow[2] * alphaByte + 255) >> 8);
+				uint8 srcAlpha = srcRow[3];
+				if (srcAlpha == 0) {
+					dstRow += 4;
+					srcRow += 4;
+					continue;
+				}
+
+				uint16 combinedAlpha = (uint16(srcAlpha) * alphaByte + 127) / 255;
+				uint16 invAlpha = 255 - combinedAlpha;
+				dstRow[0] = (uint8)((srcRow[0] * combinedAlpha
+					+ dstRow[0] * invAlpha + 127) / 255);
+				dstRow[1] = (uint8)((srcRow[1] * combinedAlpha
+					+ dstRow[1] * invAlpha + 127) / 255);
+				dstRow[2] = (uint8)((srcRow[2] * combinedAlpha
+					+ dstRow[2] * invAlpha + 127) / 255);
 				dstRow[3] = 255;
 
 				dstRow += 4;
