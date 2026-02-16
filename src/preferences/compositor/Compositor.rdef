@@ -1,0 +1,17 @@
+resource app_signature "application/x-vnd.Haiku-Compositor";
+
+resource app_name_catalog_entry "x-vnd.Haiku-Compositor:System name:Compositor";
+
+resource app_version {
+	major = 1,
+	middle = 0,
+	minor = 0,
+
+	variety = 0,
+	internal = 0,
+
+	short_info = "Compositor",
+	long_info = "Compositor ©2026 Haiku"
+};
+
+resource app_flags B_SINGLE_LAUNCH;

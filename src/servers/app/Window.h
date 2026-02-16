@@ -105,6 +105,21 @@ public:
 			::ServerWindow*		ServerWindow() const { return fWindow; }
 			::EventTarget&		EventTarget() const
 									{ return fWindow->EventTarget(); }
+			float				Alpha() const { return fAlpha; }
+			bool				HasAlpha() const { return fHasAlpha; }
+			void				SetAlpha(float alpha);
+			void				SetAlpha(float alpha, bool animate,
+									bigtime_t duration);
+			float				AnimatedAlpha(bigtime_t now);
+			bool				IsAlphaAnimating() const { return fAlphaAnimActive; }
+			bigtime_t			AlphaAnimationDuration() const
+									{ return fAlphaAnimDuration; }
+			void				SetAlphaDebugEnabled(bool enabled);
+			bool				BlurEnabled() const { return fBlurEnabled; }
+			float				BlurRadius() const { return fBlurRadius; }
+			BRect				BlurRegion() const;
+			void				SetBlurEnabled(bool enabled);
+			void				SetBlurRadius(float radius);
 
 			bool				ReloadDecor();
 
@@ -339,6 +354,7 @@ protected:
 
 			void				_ObeySizeLimits();
 			void				_PropagatePosition();
+			void				_UpdateAlphaDebug();
 
 			BString				fTitle;
 			// TODO: no fp rects anywhere
@@ -374,6 +390,10 @@ protected:
 			bool				fVisibleContentRegionValid : 1;
 			bool				fContentRegionValid : 1;
 			bool				fEffectiveDrawingRegionValid : 1;
+			bool				fHasAlpha : 1;
+			bool				fAlphaDebugEnabled : 1;
+			bool				fAlphaAnimActive : 1;
+			bool				fBlurEnabled : 1;
 
 			::RegionPool		fRegionPool;
 
@@ -386,6 +406,12 @@ protected:
 			ObjectDeleter<DrawingEngine>
 								fDrawingEngine;
 			::Desktop*			fDesktop;
+			float				fAlpha;
+			float				fAlphaTarget;
+			float				fAlphaStart;
+			bigtime_t			fAlphaAnimStart;
+			bigtime_t			fAlphaAnimDuration;
+			float				fBlurRadius;
 
 			// The synchronization, which client drawing commands
 			// belong to the redraw of which dirty region is handled

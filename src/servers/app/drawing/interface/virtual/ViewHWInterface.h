@@ -58,13 +58,17 @@ public:
 	virtual	RenderingBuffer*	FrontBuffer() const;
 	virtual	RenderingBuffer*	BackBuffer() const;
 	virtual	bool				IsDoubleBuffered() const;
+	virtual	bool				SupportsTripleBuffering() const;
+	virtual	void				SwapBackBuffers();
 
 	virtual	status_t			Invalidate(const BRect& frame);
 	virtual	status_t			CopyBackToFront(const BRect& frame);
 
 private:
 			ObjectDeleter<BBitmapBuffer>
-								fBackBuffer;
+								fBackBuffers[3];
+			int32				fBackBufferIndex;
+			int32				fBackBufferCount;
 			ObjectDeleter<BBitmapBuffer>
 								fFrontBuffer;
 

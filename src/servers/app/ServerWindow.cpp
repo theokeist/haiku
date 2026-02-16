@@ -491,6 +491,15 @@ ServerWindow::GetInfo(window_info& info)
 
 
 void
+ServerWindow::SetAlpha(float alpha)
+{
+	Window* window = Window();
+	if (window != NULL)
+		window->SetAlpha(alpha);
+}
+
+
+void
 ServerWindow::ResyncDrawState()
 {
 	_UpdateDrawState(fCurrentView);

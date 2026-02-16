@@ -40,6 +40,29 @@
 #include "FontManager.h"
 #include "PatternHandler.h"
 
+namespace {
+
+static rgb_color
+_AlphaDebugTint(const rgb_color& base, float alpha)
+{
+	float clamped = alpha;
+	if (clamped < 0.0f)
+		clamped = 0.0f;
+	else if (clamped > 1.0f)
+		clamped = 1.0f;
+
+	const rgb_color tint = { 255, 64, 255, base.alpha };
+	float amount = 1.0f - clamped;
+
+	rgb_color mixed = base;
+	mixed.red = (uint8)(base.red * clamped + tint.red * amount);
+	mixed.green = (uint8)(base.green * clamped + tint.green * amount);
+	mixed.blue = (uint8)(base.blue * clamped + tint.blue * amount);
+	return mixed;
+}
+
+} // namespace
+
 
 //#define DEBUG_DECORATOR
 #ifdef DEBUG_DECORATOR
@@ -223,6 +246,23 @@ TabDecorator::UpdateColors(DesktopSettings& settings)
 	fNonFocusTabColorShadow	= tint_color(fNonFocusTabColor,
 								(B_DARKEN_1_TINT + B_NO_TINT) / 2);
 	fNonFocusTextColor = settings.UIColor(B_WINDOW_INACTIVE_TEXT_COLOR);
+
+	if (AlphaDebugEnabled()) {
+		float alpha = AlphaDebugAlpha();
+		fFocusFrameColor = _AlphaDebugTint(fFocusFrameColor, alpha);
+		fFocusTabColor = _AlphaDebugTint(fFocusTabColor, alpha);
+		fFocusTabColorLight = _AlphaDebugTint(fFocusTabColorLight, alpha);
+		fFocusTabColorBevel = _AlphaDebugTint(fFocusTabColorBevel, alpha);
+		fFocusTabColorShadow = _AlphaDebugTint(fFocusTabColorShadow, alpha);
+		fFocusTextColor = _AlphaDebugTint(fFocusTextColor, alpha);
+
+		fNonFocusFrameColor = _AlphaDebugTint(fNonFocusFrameColor, alpha);
+		fNonFocusTabColor = _AlphaDebugTint(fNonFocusTabColor, alpha);
+		fNonFocusTabColorLight = _AlphaDebugTint(fNonFocusTabColorLight, alpha);
+		fNonFocusTabColorBevel = _AlphaDebugTint(fNonFocusTabColorBevel, alpha);
+		fNonFocusTabColorShadow = _AlphaDebugTint(fNonFocusTabColorShadow, alpha);
+		fNonFocusTextColor = _AlphaDebugTint(fNonFocusTextColor, alpha);
+	}
 }
 
 

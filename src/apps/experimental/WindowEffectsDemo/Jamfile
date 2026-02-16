@@ -1,0 +1,8 @@
+SubDir HAIKU_TOP src apps experimental WindowEffectsDemo ;
+
+UsePrivateHeaders app interface shared ;
+UsePrivateSystemHeaders ;
+
+Application WindowEffectsDemo :
+	WindowEffectsDemo.cpp
+	: be [ TargetLibstdc++ ] [ TargetLibsupc++ ] ;

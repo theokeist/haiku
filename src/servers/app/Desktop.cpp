@@ -30,11 +30,15 @@
 #include <DirectWindow.h>
 #include <Entry.h>
 #include <FindDirectory.h>
+#include <InterfaceDefs.h>
 #include <Message.h>
 #include <MessageFilter.h>
 #include <Path.h>
 #include <Region.h>
 #include <Roster.h>
+#include <String.h>
+
+#include <vector>
 
 #include <PrivateScreen.h>
 #include <ServerProtocol.h>
@@ -58,6 +62,7 @@
 #include "ServerWindow.h"
 #include "SystemPalette.h"
 #include "WindowPrivate.h"
+#include "Compositor.h"
 #include "Window.h"
 #include "Workspace.h"
 #include "WorkspacesView.h"
@@ -1710,6 +1715,8 @@ Desktop::AddWindow(Window *window)
 	if (!window->IsNormal())
 		fSubsetWindows.AddWindow(window);
 
+	window->SetAlphaDebugEnabled(fCompositorSettings.debug_controls);
+
 	if (window->IsNormal()) {
 		if (window->Workspaces() == B_CURRENT_WORKSPACE)
 			window->SetWorkspaces(workspace_to_workspaces(CurrentWorkspace()));
@@ -1958,6 +1965,55 @@ Desktop::SetWindowTitle(Window *window, const char* title)
 	window->SetTitle(title, dirty);
 
 	RebuildAndRedrawAfterWindowChange(window, dirty);
+}
+
+
+void
+Desktop::ApplyCompositorSettings(const CompositorSettings& settings)
+{
+	fCompositorSettings = settings;
+
+	if (!LockAllWindows())
+		return;
+
+	for (Window* window = AllWindows().FirstWindow(); window != NULL;
+			window = window->NextWindow(kAllWindowList)) {
+		window->SetAlphaDebugEnabled(settings.debug_controls);
+	}
+
+	UnlockAllWindows();
+
+	if (HWInterface() != NULL)
+		HWInterface()->ApplyCompositorSettings(settings);
+}
+
+
+bool
+Desktop::HandleAlphaDebugWheel(const BMessage& message)
+{
+	if (!fCompositorSettings.debug_controls)
+		return false;
+
+	int32 modifiers = message.FindInt32("modifiers");
+	if ((modifiers & (B_OPTION_KEY | B_CONTROL_KEY | B_SHIFT_KEY))
+			!= (B_OPTION_KEY | B_CONTROL_KEY | B_SHIFT_KEY)) {
+		return false;
+	}
+
+	float deltaY = 0.0f;
+	message.FindFloat("be:wheel_delta_y", &deltaY);
+	if (deltaY == 0.0f)
+		return true;
+
+	if (!LockAllWindows())
+		return true;
+
+	Window* window = FocusWindow();
+	if (window != NULL)
+		window->SetAlpha(window->Alpha() + deltaY * 0.05f);
+
+	UnlockAllWindows();
+	return true;
 }
 
 
@@ -3484,6 +3540,35 @@ Desktop::_RebuildClippingForAllWindows(BRegion& stillAvailableOnScreen)
 void
 Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 {
+	// Update compositor snapshot state for this redraw pass.
+	if (HWInterface() != NULL && fCompositorSettings.enable_compositor) {
+		std::vector<WindowSnapshot> snapshots;
+		bigtime_t now = system_time();
+		for (Window* window = CurrentWindows().FirstWindow(); window != NULL;
+				window = window->NextWindow(fCurrentWorkspace)) {
+			if (window->IsHidden())
+				continue;
+
+			if (!dirtyRegion.Intersects(window->VisibleRegion().Frame()))
+				continue;
+
+			WindowSnapshot snapshot;
+			snapshot.visible = window->VisibleRegion();
+			CompositorEffectState effect = _ResolveEffectState(window, now);
+			snapshot.alpha = effect.alpha;
+			snapshot.opaqueFastPath = effect.opaqueFastPath;
+			snapshot.animActive = effect.animActive;
+			snapshot.window = window;
+			snapshot.blurEnabled = effect.blurEnabled;
+			snapshot.blurRadius = effect.blurRadius;
+			snapshot.blurRect = effect.blurRect;
+			snapshots.push_back(snapshot);
+		}
+
+		HWInterface()->UpdateCompositorState(snapshots,
+			fWorkspaces[fCurrentWorkspace].Color());
+	}
+
 	// send redraw messages to all windows intersecting the dirty region
 	for (Window* window = CurrentWindows().LastWindow(); window != NULL;
 			window = window->PreviousWindow(fCurrentWorkspace)) {
@@ -3491,6 +3576,79 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 			&& dirtyRegion.Intersects(window->VisibleRegion().Frame()))
 			window->ProcessDirtyRegion(dirtyRegion, exposeRegion);
 	}
+}
+
+
+Desktop::CompositorEffectState
+Desktop::_ResolveEffectState(Window* window, bigtime_t now) const
+{
+	CompositorEffectState state = {};
+	bool allowNormalEffects = fCompositorSettings.enable_translucency;
+	bool allowEffects = !window->IsNormal() || allowNormalEffects;
+	bool allowAnimations = fCompositorSettings.enable_animations
+		&& allowEffects;
+	bool allowBlur = fCompositorSettings.enable_blur
+		&& (!window->IsNormal() || allowNormalEffects);
+
+	state.alpha = allowEffects
+		? (allowAnimations ? window->AnimatedAlpha(now) : window->Alpha())
+		: 1.0f;
+	state.animActive = allowAnimations && window->IsAlphaAnimating();
+	state.blurEnabled = allowBlur && window->BlurEnabled();
+	state.blurRadius = window->BlurRadius();
+	state.blurRect = state.blurEnabled ? window->BlurRegion() : BRect();
+
+	bool policyBlur = false;
+	const char* title = window->Title();
+	if (title != NULL && title[0] != '\0') {
+		BString lower(title);
+		lower.ToLower();
+		policyBlur = lower.FindFirst("deskbar") >= 0
+			|| lower.FindFirst("notification") >= 0
+			|| lower.FindFirst("notify") >= 0;
+	}
+	if (!policyBlur && window->IsFloating()
+		&& (title == NULL || title[0] == '\0')) {
+		policyBlur = true;
+	}
+
+	if (allowBlur && policyBlur) {
+		state.blurEnabled = true;
+		if (state.blurRadius <= 0.0f)
+			state.blurRadius = 6.0f;
+		if (!state.blurRect.IsValid())
+			state.blurRect = BRect(window->Frame().left, window->Frame().top,
+				window->Frame().right, window->Frame().top + 20.0f);
+	}
+
+	if (fCompositorSettings.force_blur_all
+		&& window->Feel() != kDesktopWindowFeel) {
+		state.blurEnabled = true;
+		if (state.blurEnabled) {
+			if (state.blurRadius <= 0.0f)
+				state.blurRadius = 6.0f;
+			if (!state.blurRect.IsValid())
+				state.blurRect = BRect(window->Frame().left, window->Frame().top,
+					window->Frame().right, window->Frame().top + 20.0f);
+		}
+	}
+
+	if (state.blurEnabled && state.alpha >= 1.0f)
+		state.alpha = 0.85f;
+
+	if (fCompositorSettings.force_opacity >= 0.0f
+		&& window->Feel() != kDesktopWindowFeel) {
+		if (!fCompositorSettings.force_opacity_only_opaque || state.alpha >= 1.0f)
+			state.alpha = fCompositorSettings.force_opacity;
+	}
+
+	state.opaqueFastPath = state.alpha >= 1.0f
+		&& (!state.blurEnabled || state.blurRadius <= 0.0f);
+
+	if (!state.blurEnabled)
+		state.blurRect = BRect();
+
+	return state;
 }
 
 
@@ -3558,7 +3716,10 @@ Desktop::RebuildAndRedrawAfterWindowChange(Window* changedWindow,
 	_SetBackground(stillAvailableOnScreen);
 	_WindowChanged(changedWindow);
 
-	_TriggerWindowRedrawing(dirty, dirty);
+	BRegion expose(dirty);
+	expose.Exclude(&changedWindow->VisibleRegion());
+
+	_TriggerWindowRedrawing(dirty, expose);
 }
 
 

@@ -131,6 +131,9 @@ public:
 									BRegion* updateRegion = NULL);
 			void				ColorsChanged(DesktopSettings& settings,
 									BRegion* updateRegion = NULL);
+			void				SetAlphaDebug(float alpha, bool enabled,
+									DesktopSettings& settings,
+									BRegion* updateRegion = NULL);
 
 	virtual void				UpdateColors(DesktopSettings& settings) = 0;
 
@@ -211,6 +214,11 @@ public:
 			float				TabHeight();
 
 protected:
+			bool				AlphaDebugEnabled() const
+									{ return fAlphaDebugEnabled; }
+			float				AlphaDebugAlpha() const
+									{ return fAlphaDebugAlpha; }
+
 	virtual	Decorator::Tab*		_AllocateNewTab();
 
 	virtual	void				_DoLayout() = 0;
@@ -318,6 +326,8 @@ private:
 			Desktop*			fDesktop;
 			BRegion				fFootprint;
 			bool				fFootprintValid : 1;
+			bool				fAlphaDebugEnabled : 1;
+			float				fAlphaDebugAlpha;
 
 			uint8				fRegionHighlights[REGION_COUNT - 1];
 };

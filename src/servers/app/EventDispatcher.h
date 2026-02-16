@@ -122,6 +122,7 @@ class EventDispatcher : public BLocker {
 		void _RemoveTemporaryListeners();
 
 		void _DeliverDragMessage();
+		bool _HandleAlphaDebugWheel(BMessage* event);
 
 		void _EventLoop();
 		void _CursorLoop();
