@@ -6,11 +6,14 @@ resource app_name_catalog_entry
 resource app_flags B_SINGLE_LAUNCH;
 
 resource app_version {
-	major 0,
-	minor 1,
-	micro 0,
-	pre 0,
-	revision 1,
-	short_info "Alpha Blend Demo",
-	long_info "Alpha Blend Demo\nA simple alpha blending playground."
+	major = 0,
+	middle = 1,
+	minor = 0,
+
+	variety = B_APPV_BETA,
+
+	internal = 1,
+
+	short_info = "Alpha Blend Demo",
+	long_info = "Alpha Blend Demo\nA simple alpha blending playground."
 };

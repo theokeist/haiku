@@ -33,6 +33,7 @@
 #include "ServerWindow.h"
 
 static const int32 kMsgAlphaDebugPoll = 'adpl';
+static const int32 kMsgCompositorDebugPoll = 'cdpl';
 
 
 //#define DEBUG_SERVER
@@ -62,8 +63,11 @@ AppServer::AppServer(status_t* status)
 		status),
 	fDesktopLock("AppServerDesktopLock"),
 	fAlphaDebugRunner(NULL),
+	fCompositorDebugRunner(NULL),
 	fAlphaDebugEnabled(false),
-	fAlphaDebugSettingsMTime(0)
+	fAlphaDebugSettingsMTime(0),
+	fCompositorDebugOptions(),
+	fCompositorDebugSettingsMTime(0)
 {
 	openlog("app_server", 0, LOG_DAEMON);
 
@@ -100,6 +104,9 @@ AppServer::AppServer(status_t* status)
 	_UpdateAlphaDebugSetting(true);
 	fAlphaDebugRunner = new(std::nothrow) BMessageRunner(BMessenger(this),
 		new BMessage(kMsgAlphaDebugPoll), 1000000);
+	_UpdateCompositorDebugSetting(true);
+	fCompositorDebugRunner = new(std::nothrow) BMessageRunner(BMessenger(this),
+		new BMessage(kMsgCompositorDebugPoll), 1000000);
 }
 
 
@@ -109,6 +116,7 @@ AppServer::AppServer(status_t* status)
 AppServer::~AppServer()
 {
 	delete fAlphaDebugRunner;
+	delete fCompositorDebugRunner;
 	delete gBitmapManager;
 
 	gScreenManager->Lock();
@@ -129,6 +137,10 @@ AppServer::MessageReceived(BMessage* message)
 			_UpdateAlphaDebugSetting(false);
 			break;
 
+		case kMsgCompositorDebugPoll:
+			_UpdateCompositorDebugSetting(false);
+			break;
+
 		case AS_INTERNAL_SET_WINDOW_ALPHA:
 		{
 			int32 windowToken = message->GetInt32("window", B_NULL_TOKEN);
@@ -142,6 +154,19 @@ AppServer::MessageReceived(BMessage* message)
 				&& window != NULL) {
 				window->SetAlpha(alpha);
 			}
+			break;
+		}
+
+		case AS_INTERNAL_SET_COMPOSITOR_DEBUG_OPTIONS:
+		{
+			CompositorDebugOptions options;
+			options.forceBlurAll = message->GetBool("forceBlurAll", false);
+			options.forceOpacity = message->GetFloat("forceOpacity", -1.0f);
+			options.showOverlay = message->GetBool("showOverlay", false);
+			options.logTimings = message->GetBool("logTimings", false);
+			options.stressInvalidate = message->GetBool("stressInvalidate", false);
+			fCompositorDebugOptions = options;
+			_ApplyCompositorDebugSetting(options);
 			break;
 		}
 
@@ -250,6 +275,86 @@ AppServer::_ApplyAlphaDebugSetting(bool enabled)
 }
 
 
+status_t
+AppServer::_CompositorDebugSettingsPath(BPath& path) const
+{
+	status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
+	if (status < B_OK)
+		return status;
+
+	status = path.Append("system/app_server");
+	if (status < B_OK)
+		return status;
+
+	status = create_directory(path.Path(), 0755);
+	if (status < B_OK)
+		return status;
+
+	return path.Append("compositor_debug");
+}
+
+
+void
+AppServer::_UpdateCompositorDebugSetting(bool force)
+{
+	BPath path;
+	if (_CompositorDebugSettingsPath(path) != B_OK)
+		return;
+
+	BEntry entry(path.Path());
+	time_t modified = 0;
+	CompositorDebugOptions options;
+	if (entry.Exists()) {
+		entry.GetModificationTime(&modified);
+		if (!force && modified == fCompositorDebugSettingsMTime)
+			return;
+
+		BFile file(path.Path(), B_READ_ONLY);
+		BMessage settings;
+		if (file.InitCheck() == B_OK && settings.Unflatten(&file) == B_OK) {
+			options.forceBlurAll = settings.GetBool("forceBlurAll", false);
+			options.forceOpacity = settings.GetFloat("forceOpacity", -1.0f);
+			options.showOverlay = settings.GetBool("showOverlay", false);
+			options.logTimings = settings.GetBool("logTimings", false);
+			options.stressInvalidate = settings.GetBool("stressInvalidate", false);
+		}
+	} else if (!force && fCompositorDebugSettingsMTime == 0
+		&& !fCompositorDebugOptions.forceBlurAll
+		&& fCompositorDebugOptions.forceOpacity < 0.0f
+		&& !fCompositorDebugOptions.showOverlay
+		&& !fCompositorDebugOptions.logTimings
+		&& !fCompositorDebugOptions.stressInvalidate) {
+		return;
+	}
+
+	fCompositorDebugSettingsMTime = modified;
+
+	if (!force
+		&& options.forceBlurAll == fCompositorDebugOptions.forceBlurAll
+		&& options.forceOpacity == fCompositorDebugOptions.forceOpacity
+		&& options.showOverlay == fCompositorDebugOptions.showOverlay
+		&& options.logTimings == fCompositorDebugOptions.logTimings
+		&& options.stressInvalidate == fCompositorDebugOptions.stressInvalidate) {
+		return;
+	}
+
+	fCompositorDebugOptions = options;
+	_ApplyCompositorDebugSetting(options);
+}
+
+
+void
+AppServer::_ApplyCompositorDebugSetting(const CompositorDebugOptions& options)
+{
+	BAutolock locker(fDesktopLock);
+	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
+		Desktop* desktop = fDesktops.ItemAt(i);
+		if (desktop != NULL)
+			desktop->SetCompositorDebugOptions(options);
+	}
+}
+
+
 bool
 AppServer::QuitRequested()
 {
@@ -289,6 +394,8 @@ AppServer::_CreateDesktop(uid_t userID, const char* targetScreen)
 		status_t status = desktop->Init();
 		if (status == B_OK)
 			status = desktop->Run();
+		if (status == B_OK)
+			desktop->SetCompositorDebugOptions(fCompositorDebugOptions);
 		if (status == B_OK && !fDesktops.AddItem(desktop.Get()))
 			status = B_NO_MEMORY;
 

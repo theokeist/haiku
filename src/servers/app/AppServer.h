@@ -21,6 +21,7 @@
 #include <MessageRunner.h>
 
 #include "MessageLooper.h"
+#include "CompositorDebugOptions.h"
 #include "ServerConfig.h"
 
 
@@ -56,13 +57,20 @@ private:
 			void				_UpdateAlphaDebugSetting(bool force);
 			status_t			_AlphaDebugSettingsPath(BPath& path) const;
 			void				_ApplyAlphaDebugSetting(bool enabled);
+			void				_UpdateCompositorDebugSetting(bool force);
+			status_t			_CompositorDebugSettingsPath(BPath& path) const;
+			void				_ApplyCompositorDebugSetting(
+									const CompositorDebugOptions& options);
 
 private:
 			BObjectList<Desktop> fDesktops;
 			BLocker				fDesktopLock;
 			BMessageRunner*		fAlphaDebugRunner;
+			BMessageRunner*		fCompositorDebugRunner;
 			bool				fAlphaDebugEnabled;
 			time_t				fAlphaDebugSettingsMTime;
+			CompositorDebugOptions	fCompositorDebugOptions;
+			time_t				fCompositorDebugSettingsMTime;
 };
 
 
