@@ -127,6 +127,7 @@ StdBinCommands
 	setcontrollook.cpp
 	setdecor.cpp
 	setalphadebug.cpp
+	setcompositordebug.cpp
 	listwindowtokens.cpp
 	setwindowalpha.cpp
 	settype.cpp

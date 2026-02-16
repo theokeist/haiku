@@ -21,6 +21,7 @@
 
 #include "Desktop.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <syslog.h>
@@ -90,6 +91,80 @@ static inline float
 square_distance(const BPoint& a, const BPoint& b)
 {
 	return square_vector_length(a.x - b.x, a.y - b.y);
+}
+
+
+static bool
+title_contains_case_insensitive(const char* title, const char* needle)
+{
+	if (title == NULL || needle == NULL || *needle == '\0')
+		return false;
+
+	for (const char* it = title; *it != '\0'; it++) {
+		const char* a = it;
+		const char* b = needle;
+		while (*a != '\0' && *b != '\0'
+			&& tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+			a++;
+			b++;
+		}
+		if (*b == '\0')
+			return true;
+	}
+
+	return false;
+}
+
+
+static bool
+window_should_blur_behind(const Window* window)
+{
+	const char* title = window->Title();
+	if (title != NULL && strcmp(title, "Deskbar") == 0)
+		return true;
+
+	if (title_contains_case_insensitive(title, "notification"))
+		return true;
+
+	if ((window->Feel() == B_FLOATING_ALL_WINDOW_FEEL
+			|| window->Feel() == B_FLOATING_APP_WINDOW_FEEL)
+		&& (title == NULL || title[0] == '\0')) {
+		return true;
+	}
+
+	return false;
+}
+
+
+static WindowSnapshot
+resolve_effect_state(const Window* window,
+	const CompositorDebugOptions& options)
+{
+	WindowSnapshot snapshot;
+	snapshot.visible = window->VisibleRegion();
+	snapshot.alpha = window->Alpha();
+	snapshot.blurBehind = window_should_blur_behind(window);
+	snapshot.blurRadius = snapshot.blurBehind ? 6 : 0;
+
+	// Global overrides first.
+	if (options.forceBlurAll) {
+		snapshot.blurBehind = true;
+		snapshot.blurRadius = snapshot.blurRadius > 0 ? snapshot.blurRadius : 6;
+	}
+
+	if (options.forceOpacity >= 0.0f) {
+		snapshot.alpha = options.forceOpacity;
+	} else if (snapshot.blurBehind && snapshot.alpha >= 0.99f) {
+		// Preserve prior behavior: only auto-translucent for blur-enabled windows.
+		snapshot.alpha = 0.85f;
+	}
+
+	// Optional stress mode: bigger blur radius to amplify cache/invalidation issues.
+	if (options.stressInvalidate && snapshot.blurBehind)
+		snapshot.blurRadius = 10;
+
+	snapshot.opaqueFastPath = false;
+	return snapshot;
 }
 
 
@@ -1988,6 +2063,14 @@ Desktop::SetAlphaDebugEnabled(bool enabled)
 }
 
 
+void
+Desktop::SetCompositorDebugOptions(const CompositorDebugOptions& options)
+{
+	fCompositorDebugOptions = options;
+	Redraw();
+}
+
+
 bool
 Desktop::HandleAlphaDebugWheel(const BMessage& message)
 {
@@ -3552,6 +3635,7 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 				continue;
 
 			WindowSnapshot snapshot;
+			snapshot = resolve_effect_state(window, fCompositorDebugOptions);
 			snapshot.visible = window->VisibleRegion();
 			snapshot.alpha = window->Alpha();
 			snapshot.opaqueFastPath = false;
@@ -3559,7 +3643,7 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 		}
 
 		HWInterface()->UpdateCompositorState(snapshots,
-			fWorkspaces[fCurrentWorkspace].Color());
+			fWorkspaces[fCurrentWorkspace].Color(), fCompositorDebugOptions);
 	}
 
 	// send redraw messages to all windows intersecting the dirty region

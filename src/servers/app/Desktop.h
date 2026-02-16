@@ -30,6 +30,7 @@
 #include <ServerProtocolStructs.h>
 
 #include "CursorManager.h"
+#include "CompositorDebugOptions.h"
 #include "DelayedMessage.h"
 #include "DesktopListener.h"
 #include "DesktopSettings.h"
@@ -217,6 +218,8 @@ public:
 			void				SetWindowTitle(Window* window,
 									const char* title);
 			void				SetAlphaDebugEnabled(bool enabled);
+			void				SetCompositorDebugOptions(
+									const CompositorDebugOptions& options);
 			bool				IsAlphaDebugEnabled() const
 									{ return fAlphaDebugEnabled; }
 			bool				HandleAlphaDebugWheel(const BMessage& message);
@@ -382,6 +385,7 @@ private:
 			BPoint				fLastMousePosition;
 			int32				fLastMouseButtons;
 			bool				fAlphaDebugEnabled;
+			CompositorDebugOptions	fCompositorDebugOptions;
 
 			Window*				fFocus;
 			Window*				fFront;
