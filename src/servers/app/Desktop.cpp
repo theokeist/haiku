@@ -21,6 +21,7 @@
 
 #include "Desktop.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <syslog.h>
@@ -90,6 +91,91 @@ static inline float
 square_distance(const BPoint& a, const BPoint& b)
 {
 	return square_vector_length(a.x - b.x, a.y - b.y);
+}
+
+
+static bool
+title_contains_case_insensitive(const char* title, const char* needle)
+{
+	if (title == NULL || needle == NULL || *needle == '\0')
+		return false;
+
+	for (const char* it = title; *it != '\0'; it++) {
+		const char* a = it;
+		const char* b = needle;
+		while (*a != '\0' && *b != '\0'
+			&& tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+			a++;
+			b++;
+		}
+		if (*b == '\0')
+			return true;
+	}
+
+	return false;
+}
+
+
+static bool
+window_should_blur_behind(const Window* window)
+{
+	const char* title = window->Title();
+	if (title != NULL && strcmp(title, "Deskbar") == 0)
+		return true;
+
+	if (title_contains_case_insensitive(title, "notification"))
+		return true;
+
+	if ((window->Feel() == B_FLOATING_ALL_WINDOW_FEEL
+			|| window->Feel() == B_FLOATING_APP_WINDOW_FEEL)
+		&& (title == NULL || title[0] == '\0')) {
+		return true;
+	}
+
+	return false;
+}
+
+
+static WindowSnapshot
+resolve_effect_state(const Window* window,
+	const CompositorDebugOptions& options)
+{
+	WindowSnapshot snapshot;
+	snapshot.visible = window->VisibleRegion();
+	snapshot.alpha = window->Alpha();
+	snapshot.blurBehind = false;
+	snapshot.blurRadius = 0;
+
+	// 2) Desktop policy hooks.
+	if (window_should_blur_behind(window)) {
+		snapshot.blurBehind = true;
+		snapshot.blurRadius = 6;
+		if (snapshot.alpha >= 0.99f)
+			snapshot.alpha = 0.85f;
+	}
+
+	// 1) Global overrides.
+	if (options.forceBlurAll && window->Feel() != kDesktopWindowFeel) {
+		snapshot.blurBehind = true;
+		if (snapshot.blurRadius == 0)
+			snapshot.blurRadius = 6;
+	}
+
+	if (options.forceOpacity >= 0.0f) {
+		if (snapshot.alpha >= 0.99f)
+			snapshot.alpha = options.forceOpacity;
+	}
+
+	// 3) Window-owned effect state currently includes alpha only.
+	if (snapshot.alpha < 0.0f)
+		snapshot.alpha = 0.0f;
+	if (snapshot.alpha > 1.0f)
+		snapshot.alpha = 1.0f;
+
+	snapshot.opaqueFastPath = !snapshot.blurBehind && snapshot.alpha >= 0.999f
+		&& !window->HasAlpha();
+
+	return snapshot;
 }
 
 
@@ -1988,6 +2074,13 @@ Desktop::SetAlphaDebugEnabled(bool enabled)
 }
 
 
+void
+Desktop::SetCompositorDebugOptions(const CompositorDebugOptions& options)
+{
+	fCompositorOptions = options;
+}
+
+
 bool
 Desktop::HandleAlphaDebugWheel(const BMessage& message)
 {
@@ -3540,6 +3633,12 @@ Desktop::_RebuildClippingForAllWindows(BRegion& stillAvailableOnScreen)
 void
 Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 {
+	if (fCompositorOptions.stressInvalidate) {
+		BRegion full(fVirtualScreen.Frame());
+		dirtyRegion.Include(&full);
+		exposeRegion.Include(&full);
+	}
+
 	// Update compositor snapshot state for this redraw pass.
 	if (HWInterface() != NULL) {
 		std::vector<WindowSnapshot> snapshots;
@@ -3548,18 +3647,32 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 			if (window->IsHidden())
 				continue;
 
-			if (!dirtyRegion.Intersects(window->VisibleRegion().Frame()))
+			if (window->VisibleRegion().CountRects() == 0)
 				continue;
 
-			WindowSnapshot snapshot;
-			snapshot.visible = window->VisibleRegion();
-			snapshot.alpha = window->Alpha();
-			snapshot.opaqueFastPath = !window->HasAlpha();
+			WindowSnapshot snapshot = resolve_effect_state(window,
+				fCompositorOptions);
 			snapshots.push_back(snapshot);
 		}
 
+		// Damage propagation for translucent/blurred surfaces: if underlying
+		// content changes where an effect window is visible, redraw that window.
+		for (size_t i = 0; i < snapshots.size(); i++) {
+			const WindowSnapshot& snapshot = snapshots[i];
+			if (snapshot.opaqueFastPath)
+				continue;
+
+			BRegion overlap(snapshot.visible);
+			overlap.IntersectWith(&dirtyRegion);
+			if (overlap.CountRects() == 0)
+				continue;
+
+			dirtyRegion.Include(&snapshot.visible);
+			exposeRegion.Include(&snapshot.visible);
+		}
+
 		HWInterface()->UpdateCompositorState(snapshots,
-			fWorkspaces[fCurrentWorkspace].Color());
+			fWorkspaces[fCurrentWorkspace].Color(), fCompositorOptions);
 	}
 
 	// send redraw messages to all windows intersecting the dirty region

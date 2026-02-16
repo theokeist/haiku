@@ -33,6 +33,8 @@
 #include "ServerWindow.h"
 
 static const int32 kMsgAlphaDebugPoll = 'adpl';
+static const int32 kMsgCompositorOptionsPoll = 'cdpl';
+static const int32 kMsgSetCompositorDebugOptions = 'cDbg';
 
 
 //#define DEBUG_SERVER
@@ -62,8 +64,11 @@ AppServer::AppServer(status_t* status)
 		status),
 	fDesktopLock("AppServerDesktopLock"),
 	fAlphaDebugRunner(NULL),
+	fCompositorOptionsRunner(NULL),
 	fAlphaDebugEnabled(false),
-	fAlphaDebugSettingsMTime(0)
+	fAlphaDebugSettingsMTime(0),
+	fCompositorOptions(),
+	fCompositorOptionsMTime(0)
 {
 	openlog("app_server", 0, LOG_DAEMON);
 
@@ -100,6 +105,9 @@ AppServer::AppServer(status_t* status)
 	_UpdateAlphaDebugSetting(true);
 	fAlphaDebugRunner = new(std::nothrow) BMessageRunner(BMessenger(this),
 		new BMessage(kMsgAlphaDebugPoll), 1000000);
+	_UpdateCompositorOptions(true);
+	fCompositorOptionsRunner = new(std::nothrow) BMessageRunner(BMessenger(this),
+		new BMessage(kMsgCompositorOptionsPoll), 1000000);
 }
 
 
@@ -109,6 +117,7 @@ AppServer::AppServer(status_t* status)
 AppServer::~AppServer()
 {
 	delete fAlphaDebugRunner;
+	delete fCompositorOptionsRunner;
 	delete gBitmapManager;
 
 	gScreenManager->Lock();
@@ -124,10 +133,32 @@ AppServer::~AppServer()
 void
 AppServer::MessageReceived(BMessage* message)
 {
-	switch (message->what) {
+		switch (message->what) {
 		case kMsgAlphaDebugPoll:
 			_UpdateAlphaDebugSetting(false);
 			break;
+
+		case kMsgCompositorOptionsPoll:
+			_UpdateCompositorOptions(false);
+			break;
+
+		case kMsgSetCompositorDebugOptions:
+		{
+			CompositorDebugOptions options(fCompositorOptions);
+			options.forceBlurAll = message->GetBool("forceBlurAll",
+				options.forceBlurAll);
+			options.forceOpacity = message->GetFloat("forceOpacity",
+				options.forceOpacity);
+			options.showOverlay = message->GetBool("showOverlay",
+				options.showOverlay);
+			options.logTimings = message->GetBool("logTimings",
+				options.logTimings);
+			options.stressInvalidate = message->GetBool("stressInvalidate",
+				options.stressInvalidate);
+
+			_ApplyCompositorOptions(options, true);
+			break;
+		}
 
 		case AS_INTERNAL_SET_WINDOW_ALPHA:
 		{
@@ -250,6 +281,77 @@ AppServer::_ApplyAlphaDebugSetting(bool enabled)
 }
 
 
+status_t
+AppServer::_CompositorOptionsPath(BPath& path) const
+{
+	status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
+	if (status < B_OK)
+		return status;
+
+	status = path.Append("system/app_server");
+	if (status < B_OK)
+		return status;
+
+	status = create_directory(path.Path(), 0755);
+	if (status < B_OK)
+		return status;
+
+	return path.Append("compositor_effects");
+}
+
+
+void
+AppServer::_UpdateCompositorOptions(bool force)
+{
+	BPath path;
+	if (_CompositorOptionsPath(path) != B_OK)
+		return;
+
+	BEntry entry(path.Path());
+	time_t modified = 0;
+	CompositorDebugOptions options;
+	if (entry.Exists()) {
+		entry.GetModificationTime(&modified);
+		if (!force && modified == fCompositorOptionsMTime)
+			return;
+
+		BFile file(path.Path(), B_READ_ONLY);
+		BMessage settings;
+		if (file.InitCheck() == B_OK && settings.Unflatten(&file) == B_OK) {
+			options.forceBlurAll = settings.GetBool("forceBlurAll", false);
+			options.forceOpacity = settings.GetFloat("forceOpacity", -1.0f);
+			options.showOverlay = settings.GetBool("showOverlay", false);
+			options.logTimings = settings.GetBool("logTimings", false);
+			options.stressInvalidate = settings.GetBool("stressInvalidate", false);
+		}
+	} else if (!force && fCompositorOptionsMTime == 0) {
+		return;
+	}
+
+	fCompositorOptionsMTime = modified;
+	_ApplyCompositorOptions(options, force);
+}
+
+
+void
+AppServer::_ApplyCompositorOptions(const CompositorDebugOptions& options,
+	bool triggerRedraw)
+{
+	fCompositorOptions = options;
+
+	BAutolock locker(fDesktopLock);
+	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
+		Desktop* desktop = fDesktops.ItemAt(i);
+		if (desktop == NULL)
+			continue;
+
+		desktop->SetCompositorDebugOptions(options);
+		if (triggerRedraw)
+			desktop->Redraw();
+	}
+}
+
+
 bool
 AppServer::QuitRequested()
 {
@@ -301,6 +403,9 @@ AppServer::_CreateDesktop(uid_t userID, const char* targetScreen)
 		// there is obviously no memory left
 		return NULL;
 	}
+
+	desktop->SetAlphaDebugEnabled(fAlphaDebugEnabled);
+	desktop->SetCompositorDebugOptions(fCompositorOptions);
 
 	return desktop.Detach();
 }

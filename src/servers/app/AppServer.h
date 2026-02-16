@@ -22,6 +22,7 @@
 
 #include "MessageLooper.h"
 #include "ServerConfig.h"
+#include "Compositor.h"
 
 
 #ifndef HAIKU_TARGET_PLATFORM_LIBBE_TEST
@@ -56,13 +57,21 @@ private:
 			void				_UpdateAlphaDebugSetting(bool force);
 			status_t			_AlphaDebugSettingsPath(BPath& path) const;
 			void				_ApplyAlphaDebugSetting(bool enabled);
+			void				_UpdateCompositorOptions(bool force);
+			status_t			_CompositorOptionsPath(BPath& path) const;
+			void				_ApplyCompositorOptions(
+								const CompositorDebugOptions& options,
+								bool triggerRedraw);
 
 private:
 			BObjectList<Desktop> fDesktops;
 			BLocker				fDesktopLock;
 			BMessageRunner*		fAlphaDebugRunner;
+			BMessageRunner*		fCompositorOptionsRunner;
 			bool				fAlphaDebugEnabled;
 			time_t				fAlphaDebugSettingsMTime;
+			CompositorDebugOptions	fCompositorOptions;
+			time_t				fCompositorOptionsMTime;
 };
 
 

@@ -9,6 +9,7 @@
 
 #include "HWInterface.h"
 
+#include <Autolock.h>
 #include <OS.h>
 #include <inttypes.h>
 #include <new>
@@ -46,6 +47,7 @@ HWInterfaceListener::~HWInterfaceListener()
 HWInterface::HWInterface()
 	:
 	MultiLocker("hw interface lock"),
+	fCursorAreaBackup(NULL),
 	fFloatingOverlaysLock("floating overlays lock"),
 	fCursor(NULL),
 	fDragBitmap(NULL),
@@ -55,11 +57,16 @@ HWInterface::HWInterface()
 	fCursorObscured(false),
 	fHardwareCursorEnabled(false),
 	fCursorLocation(0, 0),
+	fTrackingRect(),
 	fVGADevice(-1),
-	fListeners(20),
+	fPresentQueue(NULL),
+	fCompositor(NULL),
+	fWindowSnapshots(),
 	fCompositorBackground((rgb_color){0, 0, 0, 255}),
+	fCompositorDebugOptions(),
 	fCompositorFrameCounter(0),
 	fCompositorLogEveryN(120),
+	fPendingInvalidate(),
 	fPresentInvalidateLock("present invalidate lock"),
 	fPresentThread(-1),
 	fPresentSemaphore(-1),
@@ -67,7 +74,8 @@ HWInterface::HWInterface()
 	fPresentThreadRunning(0),
 	fPendingInvalidations(0),
 	fPresentCounter(0),
-	fPresentLogTime(0)
+	fPresentLogTime(0),
+	fListeners(20)
 {
 }
 
@@ -331,7 +339,9 @@ HWInterface::InvalidateRegion(const BRegion& region)
 
 		BRegion clipped(region);
 		IntRect bufferClip(backBuffer->Bounds());
-		clipped.IntersectWith((BRect)bufferClip);
+		BRegion clipRegion;
+		clipRegion.Set((BRect)bufferClip);
+		clipped.IntersectWith(&clipRegion);
 
 		if (clipped.CountRects() == 0)
 			return B_OK;
@@ -459,21 +469,40 @@ HWInterface::ConfigureCompositor(int32 width, int32 height,
 
 void
 HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
-	const rgb_color& background)
+	const rgb_color& background, const CompositorDebugOptions& options)
 {
+	BAutolock _(fPresentInvalidateLock);
 	fWindowSnapshots = snapshots;
 	fCompositorBackground = background;
+	fCompositorDebugOptions = options;
+
+	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
+		RenderingBuffer* buffer = DrawingBuffer();
+		if (buffer != NULL) {
+			BRegion fullBounds;
+			fullBounds.Set((BRect)buffer->Bounds());
+			fPendingInvalidate.Include(&fullBounds);
+		}
+		atomic_add(&fPendingInvalidations, 1);
+		_SchedulePresent();
+	}
 }
 
 
 void
 HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
 {
-	if (buffer == NULL || FrontBuffer() == NULL)
+	RenderingBuffer* front = FrontBuffer();
+	if (buffer == NULL || front == NULL)
 		return;
 
 	BRegion region(dirty);
-	region.IntersectWith((BRect)buffer->Bounds());
+	BRegion clipRegion;
+	clipRegion.Set((BRect)buffer->Bounds());
+	region.IntersectWith(&clipRegion);
+	BRegion frontClip;
+	frontClip.Set((BRect)front->Bounds());
+	region.IntersectWith(&frontClip);
 	if (region.CountRects() == 0)
 		return;
 
@@ -491,7 +520,7 @@ HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
 		_CopyToFront(srcOffset, srcBPR, r.left, r.top, r.right, r.bottom);
 	}
 
-	_DrawCursor(IntRect(region.Frame()));
+	_DrawCursor(_CursorFrame());
 
 	if (cursorLocked)
 		fFloatingOverlaysLock.Unlock();
@@ -558,12 +587,18 @@ void
 HWInterface::_ProcessPendingInvalidate()
 {
 	BRegion pending;
+	std::vector<WindowSnapshot> snapshots;
+	rgb_color background;
+	CompositorDebugOptions options;
 	{
 		BAutolock _(fPresentInvalidateLock);
 		if (fPendingInvalidate.CountRects() == 0)
 			return;
 		pending = fPendingInvalidate;
 		fPendingInvalidate.MakeEmpty();
+		snapshots = fWindowSnapshots;
+		background = fCompositorBackground;
+		options = fCompositorDebugOptions;
 	}
 
 	if (!fPresentQueue.IsSet() || !fCompositor.IsSet())
@@ -580,7 +615,7 @@ HWInterface::_ProcessPendingInvalidate()
 	}
 
 	ComposeStats stats = fCompositor->Compose(*renderTarget, *source,
-		pending, fWindowSnapshots, fCompositorBackground);
+		pending, snapshots, background, options);
 
 	fPresentQueue->Submit(renderTarget, pending);
 	bigtime_t presentTime = fPresentQueue->PresentNext(*this, true);
@@ -595,11 +630,21 @@ HWInterface::_ProcessPendingInvalidate()
 		debug_printf("compositor: frame %" B_PRId64
 			" invalidations=%" B_PRId32 " dirtyRects=%" B_PRId32
 			" dirtyPixels=%" B_PRId64 " windows=%" B_PRId32
-			" alpha=%" B_PRId32 " compose=%" B_PRId64 "us"
+			" alpha=%" B_PRId32 " blurWindows=%" B_PRId32
+			" blurPixels=%" B_PRId64 " blurCache(h/m)=%" B_PRId32
+			"/%" B_PRId32 " blurTime=%" B_PRId64 "us"
+			" compose=%" B_PRId64 "us"
 			" present=%" B_PRId64 "us\n",
 			fCompositorFrameCounter, invalidations, stats.dirtyRects,
 			stats.dirtyPixels, stats.windowsComposed, stats.alphaWindows,
+			stats.blurredWindows, stats.blurredPixels, stats.blurCacheHits,
+			stats.blurCacheMisses, stats.blurTime,
 			stats.composeTime, presentTime);
+		debug_printf("compositor: buffering=%s pendingRects=%" B_PRId32
+			" scheduled=%" B_PRId32 " stressInvalidate=%s\n",
+			IsDoubleBuffered() ? "double" : "single",
+			pending.CountRects(), atomic_get(&fPresentScheduled),
+			options.stressInvalidate ? "on" : "off");
 	}
 
 	fPresentCounter++;

@@ -22,6 +22,7 @@ class BButton;
 class BCheckBox;
 class BMenuField;
 class BPopUpMenu;
+class BSlider;
 class FakeScrollBar;
 
 class LookAndFeelSettingsView : public BView {
@@ -53,6 +54,10 @@ private:
 			bool				_AlphaDebugEnabled() const;
 			void				_SetAlphaDebugEnabled(bool enabled);
 			status_t			_AlphaDebugSettingsPath(BPath& path) const;
+			status_t			_CompositorEffectsSettingsPath(BPath& path) const;
+			void				_LoadCompositorEffectsSettings();
+			void				_SaveCompositorEffectsSettings();
+			void				_SendCompositorEffectsMessage() const;
 
 private:
 			DecorInfoUtility	fDecorUtility;
@@ -68,6 +73,11 @@ private:
 			FakeScrollBar*		fArrowStyleSingle;
 			FakeScrollBar*		fArrowStyleDouble;
 			BCheckBox*			fAlphaDebugCheckBox;
+			BCheckBox*			fForceEffectsAllCheckBox;
+			BCheckBox*			fShowOverlayCheckBox;
+			BCheckBox*			fLogTimingsCheckBox;
+			BCheckBox*			fStressInvalidateCheckBox;
+			BSlider*			fForceOpacitySlider;
 
 			BString				fSavedDecor;
 			BString				fCurrentDecor;
@@ -78,6 +88,16 @@ private:
 			bool				fSavedDoubleArrowsValue : 1;
 			bool				fSavedAlphaDebugEnabled : 1;
 			bool				fCurrentAlphaDebugEnabled : 1;
+			bool				fSavedForceEffectsAll;
+			bool				fSavedShowOverlay;
+			bool				fSavedLogTimings;
+			bool				fSavedStressInvalidate;
+			float				fSavedForceOpacity;
+			bool				fForceEffectsAll;
+			bool				fShowOverlay;
+			bool				fLogTimings;
+			bool				fStressInvalidate;
+			float				fForceOpacity;
 };
 
 

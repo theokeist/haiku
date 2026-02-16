@@ -26,6 +26,7 @@
 #include "IntRect.h"
 #include "MultiLocker.h"
 #include "ServerCursor.h"
+#include "Compositor.h"
 
 
 class BString;
@@ -34,10 +35,7 @@ class EventStream;
 class Overlay;
 class RenderingBuffer;
 class ServerBitmap;
-class Compositor;
 class PresentQueue;
-
-struct WindowSnapshot;
 
 
 class HWInterfaceListener {
@@ -165,8 +163,9 @@ public:
 			void				ConfigureCompositor(int32 width, int32 height,
 									color_space format);
 			void				UpdateCompositorState(
-									const std::vector<WindowSnapshot>& snapshots,
-									const rgb_color& background);
+								const std::vector<WindowSnapshot>& snapshots,
+								const rgb_color& background,
+								const CompositorDebugOptions& options);
 			void				PresentBuffer(RenderingBuffer* buffer,
 									const BRegion& dirty);
 
@@ -272,15 +271,16 @@ protected:
 			std::vector<WindowSnapshot>
 								fWindowSnapshots;
 			rgb_color			fCompositorBackground;
+			CompositorDebugOptions	fCompositorDebugOptions;
 			int64				fCompositorFrameCounter;
 			int64				fCompositorLogEveryN;
 			BRegion				fPendingInvalidate;
 			BLocker				fPresentInvalidateLock;
 			thread_id			fPresentThread;
 			sem_id				fPresentSemaphore;
-			volatile int32		fPresentScheduled;
-			volatile int32		fPresentThreadRunning;
-			volatile int32		fPendingInvalidations;
+			int32				fPresentScheduled;
+			int32				fPresentThreadRunning;
+			int32				fPendingInvalidations;
 			int64				fPresentCounter;
 			bigtime_t			fPresentLogTime;
 

@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <inttypes.h>
+
 #include <Alert.h>
 #include <Alignment.h>
 #include <AppFileInfo.h>
@@ -35,6 +37,7 @@
 #include <PathFinder.h>
 #include <PopUpMenu.h>
 #include <ScrollBar.h>
+#include <Messenger.h>
 #include <StringView.h>
 #include <Size.h>
 #include <Slider.h>
@@ -62,6 +65,8 @@ static const int32 kMsgDoubleScrollBarArrows = 'dsba';
 static const int32 kMsgArrowStyleSingle = 'mass';
 static const int32 kMsgArrowStyleDouble = 'masd';
 static const int32 kMsgAlphaDebugEnabled = 'adbg';
+static const int32 kMsgCompositorEffectChanged = 'cech';
+static const int32 kMsgSetCompositorDebugOptions = 'cDbg';
 
 static const bool kDefaultDoubleScrollBarArrowsSetting = false;
 
@@ -81,18 +86,39 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 	fArrowStyleSingle(NULL),
 	fArrowStyleDouble(NULL),
 	fAlphaDebugCheckBox(NULL),
+	fForceEffectsAllCheckBox(NULL),
+	fShowOverlayCheckBox(NULL),
+	fLogTimingsCheckBox(NULL),
+	fStressInvalidateCheckBox(NULL),
+	fForceOpacitySlider(NULL),
 	fSavedDecor(NULL),
 	fCurrentDecor(NULL),
 	fSavedControlLook(NULL),
 	fCurrentControlLook(NULL),
 	fSavedDoubleArrowsValue(_DoubleScrollBarArrows()),
 	fSavedAlphaDebugEnabled(false),
-	fCurrentAlphaDebugEnabled(false)
+	fCurrentAlphaDebugEnabled(false),
+	fSavedForceEffectsAll(false),
+	fSavedShowOverlay(false),
+	fSavedLogTimings(false),
+	fSavedStressInvalidate(false),
+	fSavedForceOpacity(-1.0f),
+	fForceEffectsAll(false),
+	fShowOverlay(false),
+	fLogTimings(false),
+	fStressInvalidate(false),
+	fForceOpacity(-1.0f)
 {
 	fCurrentDecor = fDecorUtility.CurrentDecorator()->ShortcutName();
 	fSavedDecor = fCurrentDecor;
 	fCurrentAlphaDebugEnabled = _AlphaDebugEnabled();
 	fSavedAlphaDebugEnabled = fCurrentAlphaDebugEnabled;
+	_LoadCompositorEffectsSettings();
+	fSavedForceEffectsAll = fForceEffectsAll;
+	fSavedShowOverlay = fShowOverlay;
+	fSavedLogTimings = fLogTimings;
+	fSavedStressInvalidate = fStressInvalidate;
+	fSavedForceOpacity = fForceOpacity;
 
 	// Decorator menu
 	_BuildDecorMenu();
@@ -126,6 +152,22 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 	fAlphaDebugCheckBox = new BCheckBox("alpha_debug_controls",
 		B_TRANSLATE("Enable alpha debug controls"),
 		new BMessage(kMsgAlphaDebugEnabled));
+	fForceEffectsAllCheckBox = new BCheckBox("force_effects_all",
+		B_TRANSLATE("Force compositor effects for all windows"),
+		new BMessage(kMsgCompositorEffectChanged));
+	fShowOverlayCheckBox = new BCheckBox("show_compositor_overlay",
+		B_TRANSLATE("Show compositor debug overlay"),
+		new BMessage(kMsgCompositorEffectChanged));
+	fLogTimingsCheckBox = new BCheckBox("log_compositor_timings",
+		B_TRANSLATE("Log compositor timings"),
+		new BMessage(kMsgCompositorEffectChanged));
+	fStressInvalidateCheckBox = new BCheckBox("stress_invalidate",
+		B_TRANSLATE("Stress invalidation (disable blur cache)"),
+		new BMessage(kMsgCompositorEffectChanged));
+	fForceOpacitySlider = new BSlider("force_opacity", "Force opacity: none",
+		new BMessage(kMsgCompositorEffectChanged), 0, 100, B_HORIZONTAL);
+	fForceOpacitySlider->SetHashMarks(B_HASH_MARKS_BOTTOM);
+	fForceOpacitySlider->SetHashMarkCount(6);
 
 	BView* arrowStyleView;
 	arrowStyleView = BLayoutBuilder::Group<>()
@@ -160,7 +202,12 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 		.Add(scrollBarLabel, 0, 2)
 		.Add(arrowStyleBox, 1, 2)
 		.Add(fAlphaDebugCheckBox, 0, 3, 3)
-		.AddGlue(0, 4)
+		.Add(fForceEffectsAllCheckBox, 0, 4, 3)
+		.Add(fForceOpacitySlider, 0, 5, 3)
+		.Add(fShowOverlayCheckBox, 0, 6, 3)
+		.Add(fLogTimingsCheckBox, 0, 7, 3)
+		.Add(fStressInvalidateCheckBox, 0, 8, 3)
+		.AddGlue(0, 9)
 		.SetInsets(B_USE_WINDOW_SPACING);
 
 	// TODO : Decorator Preview Image?
@@ -187,6 +234,11 @@ LookAndFeelSettingsView::AttachedToWindow()
 	fArrowStyleSingle->SetTarget(this);
 	fArrowStyleDouble->SetTarget(this);
 	fAlphaDebugCheckBox->SetTarget(this);
+	fForceEffectsAllCheckBox->SetTarget(this);
+	fShowOverlayCheckBox->SetTarget(this);
+	fLogTimingsCheckBox->SetTarget(this);
+	fStressInvalidateCheckBox->SetTarget(this);
+	fForceOpacitySlider->SetTarget(this);
 
 	if (fSavedDoubleArrowsValue)
 		fArrowStyleDouble->SetValue(B_CONTROL_ON);
@@ -195,6 +247,23 @@ LookAndFeelSettingsView::AttachedToWindow()
 
 	if (fCurrentAlphaDebugEnabled)
 		fAlphaDebugCheckBox->SetValue(B_CONTROL_ON);
+
+	fForceEffectsAllCheckBox->SetValue(fForceEffectsAll ? B_CONTROL_ON
+		: B_CONTROL_OFF);
+	fShowOverlayCheckBox->SetValue(fShowOverlay ? B_CONTROL_ON : B_CONTROL_OFF);
+	fLogTimingsCheckBox->SetValue(fLogTimings ? B_CONTROL_ON : B_CONTROL_OFF);
+	fStressInvalidateCheckBox->SetValue(fStressInvalidate ? B_CONTROL_ON
+		: B_CONTROL_OFF);
+	int32 sliderValue = fForceOpacity < 0.0f ? 0
+		: (int32)(fForceOpacity * 100.0f + 0.5f);
+	fForceOpacitySlider->SetValue(sliderValue);
+	if (fForceOpacity < 0.0f)
+		fForceOpacitySlider->SetLabel(B_TRANSLATE("Force opacity: none"));
+	else {
+		BString label;
+		label.SetToFormat("Force opacity: %" B_PRId32 "%%", sliderValue);
+		fForceOpacitySlider->SetLabel(label.String());
+	}
 }
 
 
@@ -290,6 +359,26 @@ LookAndFeelSettingsView::MessageReceived(BMessage* message)
 			bool enabled = fAlphaDebugCheckBox->Value() == B_CONTROL_ON;
 			_SetAlphaDebugEnabled(enabled);
 			break;
+		}
+
+		case kMsgCompositorEffectChanged:
+		{
+		fForceEffectsAll = fForceEffectsAllCheckBox->Value() == B_CONTROL_ON;
+		fShowOverlay = fShowOverlayCheckBox->Value() == B_CONTROL_ON;
+		fLogTimings = fLogTimingsCheckBox->Value() == B_CONTROL_ON;
+		fStressInvalidate = fStressInvalidateCheckBox->Value() == B_CONTROL_ON;
+		int32 value = fForceOpacitySlider->Value();
+		fForceOpacity = value <= 0 ? -1.0f : value / 100.0f;
+		BString label;
+		if (fForceOpacity < 0.0f)
+			label = B_TRANSLATE("Force opacity: none");
+		else
+			label.SetToFormat("Force opacity: %" B_PRId32 "%%", value);
+		fForceOpacitySlider->SetLabel(label.String());
+		_SaveCompositorEffectsSettings();
+		_SendCompositorEffectsMessage();
+		Window()->PostMessage(kMsgUpdate);
+		break;
 		}
 
 		default:
@@ -514,13 +603,104 @@ LookAndFeelSettingsView::_SetAlphaDebugEnabled(bool enabled)
 }
 
 
+status_t
+LookAndFeelSettingsView::_CompositorEffectsSettingsPath(BPath& path) const
+{
+	status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
+	if (status < B_OK)
+		return status;
+
+	status = path.Append("system/app_server");
+	if (status < B_OK)
+		return status;
+
+	status = create_directory(path.Path(), 0755);
+	if (status < B_OK)
+		return status;
+
+	return path.Append("compositor_effects");
+}
+
+
+void
+LookAndFeelSettingsView::_LoadCompositorEffectsSettings()
+{
+	fForceEffectsAll = false;
+	fShowOverlay = false;
+	fLogTimings = false;
+	fStressInvalidate = false;
+	fForceOpacity = -1.0f;
+
+	BPath path;
+	if (_CompositorEffectsSettingsPath(path) != B_OK)
+		return;
+
+	BFile file(path.Path(), B_READ_ONLY);
+	if (file.InitCheck() != B_OK)
+		return;
+
+	BMessage settings;
+	if (settings.Unflatten(&file) != B_OK)
+		return;
+
+	fForceEffectsAll = settings.GetBool("forceBlurAll", false);
+	fShowOverlay = settings.GetBool("showOverlay", false);
+	fLogTimings = settings.GetBool("logTimings", false);
+	fStressInvalidate = settings.GetBool("stressInvalidate", false);
+	fForceOpacity = settings.GetFloat("forceOpacity", -1.0f);
+}
+
+
+void
+LookAndFeelSettingsView::_SaveCompositorEffectsSettings()
+{
+	BPath path;
+	if (_CompositorEffectsSettingsPath(path) != B_OK)
+		return;
+
+	BFile file(path.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+	if (file.InitCheck() != B_OK)
+		return;
+
+	BMessage settings;
+	settings.AddBool("forceBlurAll", fForceEffectsAll);
+	settings.AddFloat("forceOpacity", fForceOpacity);
+	settings.AddBool("showOverlay", fShowOverlay);
+	settings.AddBool("logTimings", fLogTimings);
+	settings.AddBool("stressInvalidate", fStressInvalidate);
+	settings.Flatten(&file);
+}
+
+
+void
+LookAndFeelSettingsView::_SendCompositorEffectsMessage() const
+{
+	BMessenger messenger("application/x-vnd.Haiku-app_server");
+	if (!messenger.IsValid())
+		return;
+
+	BMessage message(kMsgSetCompositorDebugOptions);
+	message.AddBool("forceBlurAll", fForceEffectsAll);
+	message.AddFloat("forceOpacity", fForceOpacity);
+	message.AddBool("showOverlay", fShowOverlay);
+	message.AddBool("logTimings", fLogTimings);
+	message.AddBool("stressInvalidate", fStressInvalidate);
+	messenger.SendMessage(&message);
+}
+
+
 bool
 LookAndFeelSettingsView::IsDefaultable()
 {
 	return fCurrentDecor != fDecorUtility.DefaultDecorator()->ShortcutName()
 		|| fCurrentControlLook.Length() != 0
 		|| _DoubleScrollBarArrows() != false
-		|| fCurrentAlphaDebugEnabled != false;
+		|| fCurrentAlphaDebugEnabled != false
+		|| fForceEffectsAll
+		|| fShowOverlay
+		|| fLogTimings
+		|| fStressInvalidate
+		|| fForceOpacity >= 0.0f;
 }
 
 
@@ -531,6 +711,13 @@ LookAndFeelSettingsView::SetDefaults()
 	_SetControlLook(BString(""));
 	_SetDoubleScrollBarArrows(false);
 	_SetAlphaDebugEnabled(false);
+	fForceEffectsAll = false;
+	fShowOverlay = false;
+	fLogTimings = false;
+	fStressInvalidate = false;
+	fForceOpacity = -1.0f;
+	_SaveCompositorEffectsSettings();
+	_SendCompositorEffectsMessage();
 }
 
 
@@ -540,7 +727,12 @@ LookAndFeelSettingsView::IsRevertable()
 	return fCurrentDecor != fSavedDecor
 		|| fCurrentControlLook != fSavedControlLook
 		|| _DoubleScrollBarArrows() != fSavedDoubleArrowsValue
-		|| fCurrentAlphaDebugEnabled != fSavedAlphaDebugEnabled;
+		|| fCurrentAlphaDebugEnabled != fSavedAlphaDebugEnabled
+		|| fForceEffectsAll != fSavedForceEffectsAll
+		|| fShowOverlay != fSavedShowOverlay
+		|| fLogTimings != fSavedLogTimings
+		|| fStressInvalidate != fSavedStressInvalidate
+		|| fForceOpacity != fSavedForceOpacity;
 }
 
 
@@ -552,5 +744,12 @@ LookAndFeelSettingsView::Revert()
 		_SetControlLook(fSavedControlLook);
 		_SetDoubleScrollBarArrows(fSavedDoubleArrowsValue);
 		_SetAlphaDebugEnabled(fSavedAlphaDebugEnabled);
+		fForceEffectsAll = fSavedForceEffectsAll;
+		fShowOverlay = fSavedShowOverlay;
+		fLogTimings = fSavedLogTimings;
+		fStressInvalidate = fSavedStressInvalidate;
+		fForceOpacity = fSavedForceOpacity;
+		_SaveCompositorEffectsSettings();
+		_SendCompositorEffectsMessage();
 	}
 }
