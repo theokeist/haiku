@@ -3636,6 +3636,9 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 
 			WindowSnapshot snapshot;
 			snapshot = resolve_effect_state(window, fCompositorDebugOptions);
+			snapshot.visible = window->VisibleRegion();
+			snapshot.alpha = window->Alpha();
+			snapshot.opaqueFastPath = false;
 			snapshots.push_back(snapshot);
 		}
 
