@@ -371,6 +371,7 @@ enum {
 
 	// internal debug
 	AS_INTERNAL_SET_WINDOW_ALPHA = 'wAlp',
+	AS_INTERNAL_SET_COMPOSITOR_DEBUG_OPTIONS = 'cDbg',
 
 	AS_LAST_CODE
 };
