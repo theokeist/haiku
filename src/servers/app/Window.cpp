@@ -20,6 +20,7 @@
 #include <stdio.h>
 
 #include <Debug.h>
+#include <OS.h>
 
 #include <DirectWindow.h>
 #include <PortLink.h>
@@ -88,12 +89,22 @@ Window::Window(const BRect& frame, const char *name,
 	fVisibleContentRegionValid(false),
 	fContentRegionValid(false),
 	fEffectiveDrawingRegionValid(false),
+	fHasAlpha(false),
+	fAlphaDebugEnabled(false),
+	fAlphaAnimActive(false),
+	fBlurEnabled(false),
 
 	fRegionPool(),
 
 	fWindow(window),
 	fDrawingEngine(drawingEngine),
 	fDesktop(window->Desktop()),
+	fAlpha(1.0f),
+	fAlphaTarget(1.0f),
+	fAlphaStart(1.0f),
+	fAlphaAnimStart(0),
+	fAlphaAnimDuration(0),
+	fBlurRadius(6.0f),
 
 	fCurrentUpdateSession(&fUpdateSessions[0]),
 	fPendingUpdateSession(&fUpdateSessions[1]),
@@ -176,6 +187,172 @@ Window::~Window()
 	DetachFromWindowStack(false);
 
 	gDecorManager.CleanupForWindow(this);
+}
+
+
+void
+Window::SetAlpha(float alpha)
+{
+	SetAlpha(alpha, true, 150000);
+}
+
+
+void
+Window::SetAlpha(float alpha, bool animate, bigtime_t duration)
+{
+	bigtime_t now = system_time();
+	if (alpha < 0.0f)
+		alpha = 0.0f;
+	else if (alpha > 1.0f)
+		alpha = 1.0f;
+
+	if (fAlphaTarget == alpha && !fAlphaAnimActive)
+		return;
+
+	if (!animate || duration <= 0) {
+		fAlpha = alpha;
+		fAlphaTarget = alpha;
+		fAlphaAnimStart = 0;
+		fAlphaAnimDuration = 0;
+		fAlphaAnimActive = false;
+	} else {
+		fAlphaStart = fAlpha;
+		fAlphaTarget = alpha;
+		fAlphaAnimStart = now;
+		fAlphaAnimDuration = duration;
+		fAlphaAnimActive = fAlpha != fAlphaTarget;
+	}
+
+	fHasAlpha = fAlpha < 1.0f || fAlphaTarget < 1.0f;
+	_UpdateAlphaDebug();
+
+	BRegion dirty(VisibleRegion());
+	if (dirty.CountRects() > 0)
+		MarkDirty(dirty);
+}
+
+
+float
+Window::AnimatedAlpha(bigtime_t now)
+{
+	if (!fAlphaAnimActive)
+		return fAlpha;
+
+	if (fAlphaAnimDuration <= 0) {
+		fAlpha = fAlphaTarget;
+		fAlphaAnimActive = false;
+		fHasAlpha = fAlpha < 1.0f;
+		return fAlpha;
+	}
+
+	float t = (float)(now - fAlphaAnimStart) / (float)fAlphaAnimDuration;
+	if (t < 0.0f)
+		t = 0.0f;
+	if (t > 1.0f)
+		t = 1.0f;
+
+	// Smoothstep easing.
+	float eased = t * t * (3.0f - 2.0f * t);
+	fAlpha = fAlphaStart + (fAlphaTarget - fAlphaStart) * eased;
+
+	if (t >= 1.0f) {
+		fAlpha = fAlphaTarget;
+		fAlphaAnimActive = false;
+	}
+
+	fHasAlpha = fAlpha < 1.0f || fAlphaTarget < 1.0f;
+	if (fAlphaDebugEnabled)
+		_UpdateAlphaDebug();
+
+	return fAlpha;
+}
+
+
+void
+Window::SetAlphaDebugEnabled(bool enabled)
+{
+	if (fAlphaDebugEnabled == enabled)
+		return;
+
+	fAlphaDebugEnabled = enabled;
+	_UpdateAlphaDebug();
+}
+
+
+BRect
+Window::BlurRegion() const
+{
+	if (!fBlurEnabled || fBlurRadius <= 0.0f)
+		return BRect();
+
+	BRect frame = Frame();
+	if (!frame.IsValid())
+		return BRect();
+
+	const float blurHeight = 20.0f;
+	float height = min_c(blurHeight, frame.Height());
+	return BRect(frame.left, frame.top, frame.right, frame.top + height);
+}
+
+
+void
+Window::SetBlurEnabled(bool enabled)
+{
+	if (fBlurEnabled == enabled)
+		return;
+
+	BRect blurRect = BlurRegion();
+	fBlurEnabled = enabled;
+	if (!blurRect.IsValid())
+		blurRect = BlurRegion();
+
+	BRegion dirty(VisibleRegion());
+	if (blurRect.IsValid())
+		dirty.Include(blurRect);
+	if (dirty.CountRects() > 0)
+		MarkDirty(dirty);
+}
+
+
+void
+Window::SetBlurRadius(float radius)
+{
+	if (radius < 0.0f)
+		radius = 0.0f;
+	else if (radius > 50.0f)
+		radius = 50.0f;
+
+	if (fBlurRadius == radius)
+		return;
+
+	BRect blurRect = BlurRegion();
+	fBlurRadius = radius;
+	if (!blurRect.IsValid())
+		blurRect = BlurRegion();
+
+	BRegion dirty(VisibleRegion());
+	if (blurRect.IsValid())
+		dirty.Include(blurRect);
+	if (dirty.CountRects() > 0)
+		MarkDirty(dirty);
+}
+
+
+void
+Window::_UpdateAlphaDebug()
+{
+	if (fDesktop == NULL)
+		return;
+
+	::Decorator* decorator = Decorator();
+	if (decorator == NULL)
+		return;
+
+	DesktopSettings settings(fDesktop);
+	BRegion dirty;
+	decorator->SetAlphaDebug(fAlpha, fAlphaDebugEnabled, settings, &dirty);
+	if (dirty.CountRects() > 0)
+		MarkDirty(dirty);
 }
 
 

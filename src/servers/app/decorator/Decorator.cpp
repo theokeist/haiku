@@ -103,7 +103,9 @@ Decorator::Decorator(DesktopSettings& settings, BRect frame,
 	fTopTab(NULL),
 
 	fDesktop(desktop),
-	fFootprintValid(false)
+	fFootprintValid(false),
+	fAlphaDebugEnabled(false),
+	fAlphaDebugAlpha(1.0f)
 {
 	memset(&fRegionHighlights, HIGHLIGHT_NONE, sizeof(fRegionHighlights));
 }
@@ -282,6 +284,32 @@ void
 Decorator::ColorsChanged(DesktopSettings& settings, BRegion* updateRegion)
 {
 	AutoWriteLocker _(fLocker);
+
+	UpdateColors(settings);
+
+	if (updateRegion != NULL)
+		updateRegion->Include(&GetFootprint());
+
+	_InvalidateBitmaps();
+}
+
+
+void
+Decorator::SetAlphaDebug(float alpha, bool enabled, DesktopSettings& settings,
+	BRegion* updateRegion)
+{
+	AutoWriteLocker _(fLocker);
+
+	if (alpha < 0.0f)
+		alpha = 0.0f;
+	else if (alpha > 1.0f)
+		alpha = 1.0f;
+
+	if (fAlphaDebugEnabled == enabled && fAlphaDebugAlpha == alpha)
+		return;
+
+	fAlphaDebugEnabled = enabled;
+	fAlphaDebugAlpha = alpha;
 
 	UpdateColors(settings);
 

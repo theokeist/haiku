@@ -52,6 +52,7 @@ SYSTEM_APPS += [ FFilterByBuildFeatures
 	SerialConnect
 	SoftwareUpdater
 	SoundRecorder
+	WindowEffectsDemo
 ] ;
 
 DESKBAR_APPLICATIONS +=

@@ -18,6 +18,7 @@
 #include <LaunchRoster.h>
 #include <PortLink.h>
 #include <RosterPrivate.h>
+#include <TokenSpace.h>
 
 #include "BitmapManager.h"
 #include "Desktop.h"
@@ -25,6 +26,8 @@
 #include "InputManager.h"
 #include "ScreenManager.h"
 #include "ServerProtocol.h"
+#include "ServerWindow.h"
+#include "Window.h"
 
 
 //#define DEBUG_SERVER
@@ -85,6 +88,8 @@ AppServer::AppServer(status_t* status)
 	BMessage request(kMsgAppServerStarted);
 	BRoster::Private().SendTo(&request, NULL, false);
 #endif
+
+	_LoadCompositorSettings();
 }
 
 
@@ -109,6 +114,111 @@ void
 AppServer::MessageReceived(BMessage* message)
 {
 	switch (message->what) {
+		case AS_INTERNAL_SET_WINDOW_ALPHA:
+		{
+			int32 windowToken = message->GetInt32("window", B_NULL_TOKEN);
+			float alpha = message->GetFloat("alpha", 1.0f);
+
+			BAutolock tokenLocker(BPrivate::gDefaultTokens);
+			ServerWindow* window = NULL;
+			if (windowToken != B_NULL_TOKEN
+				&& BPrivate::gDefaultTokens.GetToken(windowToken,
+					B_SERVER_TOKEN, (void**)&window) == B_OK
+				&& window != NULL) {
+				window->SetAlpha(alpha);
+			}
+			break;
+		}
+		case AS_PRIVATE_SET_WINDOW_EFFECTS:
+		{
+			BMessage reply;
+			status_t status = B_BAD_VALUE;
+			int32 windowToken = message->GetInt32("window", B_NULL_TOKEN);
+			bool animate = message->GetBool("animate", false);
+			bigtime_t duration = message->GetInt64("duration", 150000);
+
+			float alpha = 1.0f;
+			bool blurEnabled = false;
+			float blurRadius = 0.0f;
+			bool hasAlpha = message->FindFloat("alpha", &alpha) == B_OK;
+			bool hasBlur = message->FindBool("blur", &blurEnabled) == B_OK;
+			bool hasBlurRadius = message->FindFloat("blur_radius", &blurRadius)
+				== B_OK;
+
+			if (hasAlpha || hasBlur || hasBlurRadius) {
+				BAutolock tokenLocker(BPrivate::gDefaultTokens);
+				ServerWindow* window = NULL;
+				if (windowToken != B_NULL_TOKEN
+					&& BPrivate::gDefaultTokens.GetToken(windowToken,
+						B_SERVER_TOKEN, (void**)&window) == B_OK
+					&& window != NULL
+					&& window->Window() != NULL) {
+					Window* effectsWindow = window->Window();
+					if (hasAlpha)
+						effectsWindow->SetAlpha(alpha, animate, duration);
+					if (hasBlur)
+						effectsWindow->SetBlurEnabled(blurEnabled);
+					if (hasBlurRadius)
+						effectsWindow->SetBlurRadius(blurRadius);
+
+					reply.AddFloat("alpha", effectsWindow->Alpha());
+					reply.AddBool("blur", effectsWindow->BlurEnabled());
+					reply.AddFloat("blur_radius", effectsWindow->BlurRadius());
+					reply.AddInt64("duration",
+						effectsWindow->AlphaAnimationDuration());
+					status = B_OK;
+				}
+			}
+
+			reply.what = status;
+			message->SendReply(&reply);
+			break;
+		}
+		case AS_INTERNAL_SET_COMPOSITOR_DEBUG_OPTIONS:
+		{
+			fCompositorSettings.force_blur_all
+				= message->GetBool("force_blur_all",
+					fCompositorSettings.force_blur_all);
+			fCompositorSettings.force_opacity = message->GetFloat("force_opacity",
+				fCompositorSettings.force_opacity);
+			fCompositorSettings.force_opacity_only_opaque
+				= message->GetBool("force_opacity_only_opaque",
+					fCompositorSettings.force_opacity_only_opaque);
+			fCompositorSettings.show_overlay = message->GetBool("show_overlay",
+				fCompositorSettings.show_overlay);
+			fCompositorSettings.log_timings = message->GetBool("log_timings",
+				fCompositorSettings.log_timings);
+			fCompositorSettings.stress_invalidate
+				= message->GetBool("stress_invalidate",
+					fCompositorSettings.stress_invalidate);
+
+			if (fCompositorSettings.force_opacity > 1.0f)
+				fCompositorSettings.force_opacity = 1.0f;
+			if (fCompositorSettings.force_opacity < 0.0f
+				&& fCompositorSettings.force_opacity != -1.0f) {
+				fCompositorSettings.force_opacity = -1.0f;
+			}
+
+			_ApplyCompositorSettings();
+			_InvalidateAllDesktops();
+
+			BMessage reply(B_OK);
+			reply.AddBool("force_blur_all", fCompositorSettings.force_blur_all);
+			reply.AddFloat("force_opacity", fCompositorSettings.force_opacity);
+			reply.AddBool("force_opacity_only_opaque",
+				fCompositorSettings.force_opacity_only_opaque);
+			reply.AddBool("show_overlay", fCompositorSettings.show_overlay);
+			reply.AddBool("log_timings", fCompositorSettings.log_timings);
+			reply.AddBool("stress_invalidate",
+				fCompositorSettings.stress_invalidate);
+			message->SendReply(&reply);
+			break;
+		}
+		case AS_INTERNAL_RELOAD_COMPOSITOR_SETTINGS:
+			_LoadCompositorSettings();
+			_InvalidateAllDesktops();
+			break;
+
 		case AS_GET_DESKTOP:
 		{
 			Desktop* desktop = NULL;
@@ -147,6 +257,38 @@ AppServer::MessageReceived(BMessage* message)
 			STRACE(("AppServer received unexpected code %" B_PRId32 "\n",
 				message->what));
 			break;
+	}
+}
+
+
+void
+AppServer::_LoadCompositorSettings()
+{
+	fCompositorSettings.LoadFromSettingsFile();
+	_ApplyCompositorSettings();
+}
+
+
+void
+AppServer::_ApplyCompositorSettings()
+{
+	BAutolock locker(fDesktopLock);
+	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
+		Desktop* desktop = fDesktops.ItemAt(i);
+		if (desktop != NULL)
+			desktop->ApplyCompositorSettings(fCompositorSettings);
+	}
+}
+
+
+void
+AppServer::_InvalidateAllDesktops()
+{
+	BAutolock locker(fDesktopLock);
+	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
+		Desktop* desktop = fDesktops.ItemAt(i);
+		if (desktop != NULL)
+			desktop->Redraw();
 	}
 }
 
@@ -203,7 +345,10 @@ AppServer::_CreateDesktop(uid_t userID, const char* targetScreen)
 		return NULL;
 	}
 
-	return desktop.Detach();
+	Desktop* created = desktop.Detach();
+	if (created != NULL)
+		created->ApplyCompositorSettings(fCompositorSettings);
+	return created;
 }
 
 

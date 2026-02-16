@@ -19,6 +19,7 @@
 #include <Autolock.h>
 #include <Entry.h>
 #include <NodeMonitor.h>
+#include <typeinfo>
 
 #include <new>
 
@@ -226,6 +227,13 @@ ScreenManager::_AddHWInterface(HWInterface* interface)
 	// The interface is now owned by the screen
 
 	if (screen->Initialize() >= B_OK) {
+		debug_printf("app_server: HWInterface %s\n",
+			typeid(*interface).name());
+		debug_printf("app_server: screen blit hook %s\n",
+			interface->HasScreenBlitHook() ? "available" : "unavailable");
+		debug_printf("app_server: present path %s\n",
+			interface->HasScreenBlitHook() ? "accelerant" : "memcpy");
+
 		screen_item* item = new(nothrow) screen_item;
 
 		if (item != NULL) {

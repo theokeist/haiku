@@ -19,6 +19,7 @@
 #include <Window.h>
 
 #include "MessageLooper.h"
+#include "CompositorSettings.h"
 #include "ServerConfig.h"
 
 
@@ -51,10 +52,14 @@ private:
 									const char* targetScreen);
 
 			void				_LaunchInputServer();
+			void				_LoadCompositorSettings();
+			void				_ApplyCompositorSettings();
+			void				_InvalidateAllDesktops();
 
 private:
 			BObjectList<Desktop> fDesktops;
 			BLocker				fDesktopLock;
+			CompositorSettings	fCompositorSettings;
 };
 
 

@@ -745,6 +745,16 @@ EventDispatcher::_DeliverDragMessage()
 }
 
 
+bool
+EventDispatcher::_HandleAlphaDebugWheel(BMessage* event)
+{
+	if (event->what != B_MOUSE_WHEEL_CHANGED || fDesktop == NULL)
+		return false;
+
+	return fDesktop->HandleAlphaDebugWheel(*event);
+}
+
+
 //	#pragma mark - Event loops
 
 
@@ -761,6 +771,7 @@ EventDispatcher::_EventLoop()
 		bool pointerEvent = false;
 		bool keyboardEvent = false;
 		bool addedTokens = false;
+		bool dropEvent = false;
 
 		switch (event->what) {
 			case kFakeMouseMoved:
@@ -911,6 +922,13 @@ EventDispatcher::_EventLoop()
 
 				// supposed to fall through
 
+			case B_MOUSE_WHEEL_CHANGED:
+				if (_HandleAlphaDebugWheel(event)) {
+					dropEvent = true;
+					break;
+				}
+				// supposed to fall through
+
 			default:
 				// TODO: the keyboard filter sets the focus - ie. no other
 				//	focus messages that go through the event dispatcher can
@@ -925,6 +943,11 @@ EventDispatcher::_EventLoop()
 						kStandardImportance);
 				}
 				break;
+		}
+
+		if (dropEvent) {
+			delete event;
+			continue;
 		}
 
 		if (keyboardEvent || pointerEvent) {

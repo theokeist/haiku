@@ -16,6 +16,8 @@ HaikuSubInclude devices ;
 HaikuSubInclude diskprobe ;
 HaikuSubInclude diskusage ;
 HaikuSubInclude drivesetup ;
+HaikuSubInclude experimental ;
+HaikuSubInclude experimentalcompositor ;
 HaikuSubInclude expander ;
 HaikuSubInclude firstbootprompt ;
 HaikuSubInclude fontdemo ;
