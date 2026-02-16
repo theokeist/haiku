@@ -53,6 +53,9 @@ private:
 			bool				_AlphaDebugEnabled() const;
 			void				_SetAlphaDebugEnabled(bool enabled);
 			status_t			_AlphaDebugSettingsPath(BPath& path) const;
+			status_t			_CompositorDebugSettingsPath(BPath& path) const;
+			void				_LoadCompositorDebugSettings();
+			void				_SaveCompositorDebugSettings(bool notifyLive = true);
 
 private:
 			DecorInfoUtility	fDecorUtility;
@@ -68,6 +71,10 @@ private:
 			FakeScrollBar*		fArrowStyleSingle;
 			FakeScrollBar*		fArrowStyleDouble;
 			BCheckBox*			fAlphaDebugCheckBox;
+			BCheckBox*			fForceEffectsCheckBox;
+			BCheckBox*			fCompositorOverlayCheckBox;
+			BCheckBox*			fCompositorTimingCheckBox;
+			BCheckBox*			fCompositorStressCheckBox;
 
 			BString				fSavedDecor;
 			BString				fCurrentDecor;
@@ -78,6 +85,14 @@ private:
 			bool				fSavedDoubleArrowsValue : 1;
 			bool				fSavedAlphaDebugEnabled : 1;
 			bool				fCurrentAlphaDebugEnabled : 1;
+			bool				fSavedForceEffectsAll : 1;
+			bool				fSavedCompositorOverlay : 1;
+			bool				fSavedCompositorTimings : 1;
+			bool				fSavedCompositorStress : 1;
+			bool				fCurrentForceEffectsAll : 1;
+			bool				fCurrentCompositorOverlay : 1;
+			bool				fCurrentCompositorTimings : 1;
+			bool				fCurrentCompositorStress : 1;
 };
 
 
