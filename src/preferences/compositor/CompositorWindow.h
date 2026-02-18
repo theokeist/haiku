@@ -6,11 +6,13 @@
 #define COMPOSITOR_WINDOW_H
 
 #include <Path.h>
+#include <String.h>
 #include <Window.h>
 
 class BButton;
 class BCheckBox;
 class BSlider;
+class BTextControl;
 
 class CompositorWindow : public BWindow {
 public:
@@ -33,6 +35,10 @@ private:
 		bool		showOverlay;
 		bool		logTimings;
 		bool		stressInvalidate;
+		bool		enableTitleBlurPolicy;
+		bool		enableFloatingUntitledBlurPolicy;
+		BString		blurPolicyTokens;
+		BString		forceOpacityColor;
 	};
 
 	void				_LoadSettings();
@@ -59,6 +65,10 @@ private:
 	BCheckBox* 			fShowOverlayCheckBox;
 	BCheckBox* 			fLogTimingsCheckBox;
 	BCheckBox* 			fStressInvalidateCheckBox;
+	BCheckBox*			fTitleBlurPolicyCheckBox;
+	BCheckBox*			fFloatingUntitledBlurPolicyCheckBox;
+	BTextControl*		fBlurPolicyTokensControl;
+	BTextControl*		fForceOpacityColorControl;
 	BSlider*			fForceOpacitySlider;
 	BSlider*			fFpsSlider;
 	BButton*			fApplyButton;

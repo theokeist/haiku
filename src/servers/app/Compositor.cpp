@@ -10,6 +10,7 @@
 #include <string.h>
 #include <String.h>
 
+#include "GaussianBlur.h"
 #include "RenderingBuffer.h"
 
 Compositor::BlurCacheEntry::BlurCacheEntry()
@@ -277,67 +278,23 @@ Compositor::_BlurRegion(RenderingBuffer& dst, const BRect& rect,
 		radius = 1;
 	if (radius > 32)
 		radius = 32;
-	const int32 pixels = width * height;
 
-	std::vector<uint32> temp(pixels);
+	std::vector<uint32> input(width * height);
+	std::vector<uint32> temp;
+	if ((int32)output.size() != width * height)
+		output.resize(width * height);
 
 	uint8* dstBits = (uint8*)dst.Bits();
 	uint32 dstBPR = dst.BytesPerRow();
 	for (int32 y = 0; y < height; y++) {
 		const uint32* row = (const uint32*)(dstBits
 			+ (top + y) * dstBPR + left * 4);
-		memcpy(&temp[y * width], row, width * sizeof(uint32));
+		memcpy(&input[y * width], row, width * sizeof(uint32));
 	}
 
-	for (int32 y = 0; y < height; y++) {
-		for (int32 x = 0; x < width; x++) {
-			int32 start = max_c(0, x - radius);
-			int32 end = min_c(width - 1, x + radius);
-			uint32 sumB = 0;
-			uint32 sumG = 0;
-			uint32 sumR = 0;
-			uint32 sumA = 0;
-			int32 count = end - start + 1;
-			for (int32 i = start; i <= end; i++) {
-				uint32 pixel = temp[y * width + i];
-				sumB += pixel & 0xff;
-				sumG += (pixel >> 8) & 0xff;
-				sumR += (pixel >> 16) & 0xff;
-				sumA += (pixel >> 24) & 0xff;
-			}
-			uint32 blurred = (sumA / count) << 24
-				| (sumR / count) << 16
-				| (sumG / count) << 8
-				| (sumB / count);
-			output[y * width + x] = blurred;
-		}
-	}
-
-	for (int32 x = 0; x < width; x++) {
-		for (int32 y = 0; y < height; y++) {
-			int32 start = max_c(0, y - radius);
-			int32 end = min_c(height - 1, y + radius);
-			uint32 sumB = 0;
-			uint32 sumG = 0;
-			uint32 sumR = 0;
-			uint32 sumA = 0;
-			int32 count = end - start + 1;
-			for (int32 i = start; i <= end; i++) {
-				uint32 pixel = output[i * width + x];
-				sumB += pixel & 0xff;
-				sumG += (pixel >> 8) & 0xff;
-				sumR += (pixel >> 16) & 0xff;
-				sumA += (pixel >> 24) & 0xff;
-			}
-			uint32 blurred = (sumA / count) << 24
-				| (sumR / count) << 16
-				| (sumG / count) << 8
-				| (sumB / count);
-			temp[y * width + x] = blurred;
-		}
-	}
-
-	output.swap(temp);
+	const GaussianKernel& kernel = GaussianBlurLibrary::KernelForRadius(radius);
+	GaussianBlurLibrary::BlurRGBA32(&input[0], &output[0], width, height, kernel,
+		temp);
 }
 
 

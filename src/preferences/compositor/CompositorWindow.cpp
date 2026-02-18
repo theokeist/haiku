@@ -14,8 +14,12 @@
 #include <Message.h>
 #include <Path.h>
 #include <Slider.h>
+#include <TextControl.h>
 
 #include <private/app/ServerProtocol.h>
+
+#include <stdlib.h>
+#include <string.h>
 
 
 #undef B_TRANSLATION_CONTEXT
@@ -47,12 +51,45 @@ const char* kForceOpacityOnlyOpaqueKey = "force_opacity_only_opaque";
 const char* kShowOverlayKey = "show_overlay";
 const char* kLogTimingsKey = "log_timings";
 const char* kStressInvalidateKey = "stress_invalidate";
+const char* kEnableTitleBlurPolicyKey = "enable_title_blur_policy";
+const char* kEnableFloatingUntitledBlurPolicyKey
+	= "enable_floating_untitled_blur_policy";
+const char* kBlurPolicyTokensKey = "blur_policy_tokens";
+const char* kForceOpacityColorKey = "force_opacity_color";
+
+static bool
+_parse_alpha_from_color_text(const BString& text, float& alpha)
+{
+	BString value(text);
+	value.Trim();
+	if (value.IsEmpty())
+		return false;
+
+	if (value[0] == '#')
+		value.Remove(0, 1);
+
+	if (value.Length() != 8)
+		return false;
+
+	const char* string = value.String();
+	char* end = NULL;
+	unsigned long raw = strtoul(string, &end, 16);
+	if (end == string || *end != '\0')
+		return false;
+
+	uint8 a = (uint8)((raw >> 24) & 0xff);
+	if (strstr(text.String(), "rgba") != NULL || strstr(text.String(), "RGBA") != NULL)
+		a = (uint8)(raw & 0xff);
+
+	alpha = (float)a / 255.0f;
+	return true;
+}
 
 } // namespace
 
 
 CompositorWindow::CompositorWindow()
-	:	BWindow(BRect(0, 0, 360, 260), B_TRANSLATE_SYSTEM_NAME("Compositor"),
+	:	BWindow(BRect(0, 0, 520, 520), B_TRANSLATE_SYSTEM_NAME("Compositor"),
 			B_TITLED_WINDOW,
 			B_AUTO_UPDATE_SIZE_LIMITS | B_NOT_ZOOMABLE | B_ASYNCHRONOUS_CONTROLS),
 	fAnimationsCheckBox(NULL),
@@ -66,6 +103,10 @@ CompositorWindow::CompositorWindow()
 	fShowOverlayCheckBox(NULL),
 	fLogTimingsCheckBox(NULL),
 	fStressInvalidateCheckBox(NULL),
+	fTitleBlurPolicyCheckBox(NULL),
+	fFloatingUntitledBlurPolicyCheckBox(NULL),
+	fBlurPolicyTokensControl(NULL),
+	fForceOpacityColorControl(NULL),
 	fForceOpacitySlider(NULL),
 	fFpsSlider(NULL),
 	fApplyButton(NULL)
@@ -103,6 +144,19 @@ CompositorWindow::CompositorWindow()
 	fStressInvalidateCheckBox = new BCheckBox("stress_invalidate",
 		B_TRANSLATE("Stress invalidate (disable blur cache)"),
 		new BMessage(kMsgSettingsChanged));
+	fTitleBlurPolicyCheckBox = new BCheckBox("title_blur_policy",
+		B_TRANSLATE("Enable title-token blur policy"),
+		new BMessage(kMsgSettingsChanged));
+	fFloatingUntitledBlurPolicyCheckBox = new BCheckBox(
+		"floating_untitled_blur_policy",
+		B_TRANSLATE("Enable floating untitled blur policy"),
+		new BMessage(kMsgSettingsChanged));
+	fBlurPolicyTokensControl = new BTextControl("blur_policy_tokens",
+		B_TRANSLATE("Blur policy tokens:"), "",
+		new BMessage(kMsgSettingsChanged));
+	fForceOpacityColorControl = new BTextControl("force_opacity_color",
+		B_TRANSLATE("Forced opacity color (AARRGGBB or RRGGBBAA rgba):"),
+		"", new BMessage(kMsgSettingsChanged));
 	fForceOpacitySlider = new BSlider("force_opacity_value",
 		B_TRANSLATE("Forced opacity:"), new BMessage(kMsgSettingsChanged),
 		kMinOpacity, kMaxOpacity, B_HORIZONTAL);
@@ -136,6 +190,10 @@ CompositorWindow::CompositorWindow()
 		.Add(fShowOverlayCheckBox)
 		.Add(fLogTimingsCheckBox)
 		.Add(fStressInvalidateCheckBox)
+		.Add(fTitleBlurPolicyCheckBox)
+		.Add(fFloatingUntitledBlurPolicyCheckBox)
+		.Add(fBlurPolicyTokensControl)
+		.Add(fForceOpacityColorControl)
 		.Add(fFpsSlider)
 		.AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
 			.AddGlue()
@@ -162,10 +220,13 @@ CompositorWindow::MessageReceived(BMessage* message)
 {
 	switch (message->what) {
 		case kMsgSettingsChanged:
-			fForceOpacitySlider->SetEnabled(
-				fForceOpacityCheckBox->Value() == B_CONTROL_ON);
+		{
+			bool forceEnabled = fForceOpacityCheckBox->Value() == B_CONTROL_ON;
+			fForceOpacitySlider->SetEnabled(forceEnabled);
+			fForceOpacityColorControl->SetEnabled(forceEnabled);
 			_UpdateApplyState();
 			break;
+		}
 		case kMsgApplySettings:
 			_SaveSettings();
 			break;
@@ -218,6 +279,15 @@ CompositorWindow::_LoadSettings()
 		fCurrent.logTimings);
 	fCurrent.stressInvalidate = settings.GetBool(kStressInvalidateKey,
 		fCurrent.stressInvalidate);
+	fCurrent.enableTitleBlurPolicy = settings.GetBool(kEnableTitleBlurPolicyKey,
+		fCurrent.enableTitleBlurPolicy);
+	fCurrent.enableFloatingUntitledBlurPolicy = settings.GetBool(
+		kEnableFloatingUntitledBlurPolicyKey,
+		fCurrent.enableFloatingUntitledBlurPolicy);
+	fCurrent.blurPolicyTokens = settings.GetString(kBlurPolicyTokensKey,
+		fCurrent.blurPolicyTokens);
+	fCurrent.forceOpacityColor = settings.GetString(kForceOpacityColorKey,
+		fCurrent.forceOpacityColor);
 
 	if (fCurrent.targetFps <= 0)
 		fCurrent.targetFps = 60;
@@ -249,12 +319,23 @@ CompositorWindow::_SaveSettings()
 	fCurrent.forceBlurAll = fForceBlurAllCheckBox->Value() == B_CONTROL_ON;
 	fCurrent.forceOpacity = fForceOpacityCheckBox->Value() == B_CONTROL_ON
 		? (float)fForceOpacitySlider->Value() / 100.0f : -1.0f;
+	fCurrent.forceOpacityColor = fForceOpacityColorControl->Text();
+	if (fCurrent.forceOpacity >= 0.0f) {
+		float parsedAlpha = -1.0f;
+		if (_parse_alpha_from_color_text(fCurrent.forceOpacityColor, parsedAlpha))
+			fCurrent.forceOpacity = parsedAlpha;
+	}
 	fCurrent.forceOpacityOnlyOpaque
 		= fForceOpacityOnlyOpaqueCheckBox->Value() == B_CONTROL_ON;
 	fCurrent.showOverlay = fShowOverlayCheckBox->Value() == B_CONTROL_ON;
 	fCurrent.logTimings = fLogTimingsCheckBox->Value() == B_CONTROL_ON;
 	fCurrent.stressInvalidate
 		= fStressInvalidateCheckBox->Value() == B_CONTROL_ON;
+	fCurrent.enableTitleBlurPolicy
+		= fTitleBlurPolicyCheckBox->Value() == B_CONTROL_ON;
+	fCurrent.enableFloatingUntitledBlurPolicy
+		= fFloatingUntitledBlurPolicyCheckBox->Value() == B_CONTROL_ON;
+	fCurrent.blurPolicyTokens = fBlurPolicyTokensControl->Text();
 
 	BPath path;
 	if (_SettingsPath(path) != B_OK)
@@ -279,6 +360,12 @@ CompositorWindow::_SaveSettings()
 	settings.AddBool(kShowOverlayKey, fCurrent.showOverlay);
 	settings.AddBool(kLogTimingsKey, fCurrent.logTimings);
 	settings.AddBool(kStressInvalidateKey, fCurrent.stressInvalidate);
+	settings.AddBool(kEnableTitleBlurPolicyKey,
+		fCurrent.enableTitleBlurPolicy);
+	settings.AddBool(kEnableFloatingUntitledBlurPolicyKey,
+		fCurrent.enableFloatingUntitledBlurPolicy);
+	settings.AddString(kBlurPolicyTokensKey, fCurrent.blurPolicyTokens);
+	settings.AddString(kForceOpacityColorKey, fCurrent.forceOpacityColor);
 
 	if (settings.Flatten(&file) != B_OK)
 		return;
@@ -316,9 +403,16 @@ CompositorWindow::_UpdateControls()
 		fSaved.logTimings ? B_CONTROL_ON : B_CONTROL_OFF);
 	fStressInvalidateCheckBox->SetValue(
 		fSaved.stressInvalidate ? B_CONTROL_ON : B_CONTROL_OFF);
+	fTitleBlurPolicyCheckBox->SetValue(
+		fSaved.enableTitleBlurPolicy ? B_CONTROL_ON : B_CONTROL_OFF);
+	fFloatingUntitledBlurPolicyCheckBox->SetValue(
+		fSaved.enableFloatingUntitledBlurPolicy ? B_CONTROL_ON : B_CONTROL_OFF);
+	fBlurPolicyTokensControl->SetText(fSaved.blurPolicyTokens.String());
+	fForceOpacityColorControl->SetText(fSaved.forceOpacityColor.String());
 	fForceOpacitySlider->SetValue((int32)((fSaved.forceOpacity >= 0.0f
 		? fSaved.forceOpacity : 0.85f) * 100.0f));
 	fForceOpacitySlider->SetEnabled(fSaved.forceOpacity >= 0.0f);
+	fForceOpacityColorControl->SetEnabled(fSaved.forceOpacity >= 0.0f);
 	fFpsSlider->SetValue(fSaved.targetFps);
 }
 
@@ -380,6 +474,10 @@ CompositorWindow::_SetDefaults(Settings& settings)
 	settings.showOverlay = false;
 	settings.logTimings = false;
 	settings.stressInvalidate = false;
+	settings.enableTitleBlurPolicy = true;
+	settings.enableFloatingUntitledBlurPolicy = true;
+	settings.blurPolicyTokens = "deskbar,notification,notify";
+	settings.forceOpacityColor = "";
 }
 
 
@@ -400,6 +498,11 @@ CompositorWindow::_IsDirty() const
 	bool showOverlay = fShowOverlayCheckBox->Value() == B_CONTROL_ON;
 	bool logTimings = fLogTimingsCheckBox->Value() == B_CONTROL_ON;
 	bool stressInvalidate = fStressInvalidateCheckBox->Value() == B_CONTROL_ON;
+	bool titleBlurPolicy = fTitleBlurPolicyCheckBox->Value() == B_CONTROL_ON;
+	bool floatingUntitledBlurPolicy
+		= fFloatingUntitledBlurPolicyCheckBox->Value() == B_CONTROL_ON;
+	BString blurPolicyTokens = fBlurPolicyTokensControl->Text();
+	BString forceOpacityColor = fForceOpacityColorControl->Text();
 	int32 fps = fFpsSlider->Value();
 
 	return fSaved.enableAnimations != animations
@@ -413,6 +516,10 @@ CompositorWindow::_IsDirty() const
 		|| fSaved.showOverlay != showOverlay
 		|| fSaved.logTimings != logTimings
 		|| fSaved.stressInvalidate != stressInvalidate
+		|| fSaved.enableTitleBlurPolicy != titleBlurPolicy
+		|| fSaved.enableFloatingUntitledBlurPolicy != floatingUntitledBlurPolicy
+		|| fSaved.blurPolicyTokens != blurPolicyTokens
+		|| fSaved.forceOpacityColor != forceOpacityColor
 		|| fSaved.targetFps != fps;
 }
 

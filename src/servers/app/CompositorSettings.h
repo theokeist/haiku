@@ -5,6 +5,7 @@
 #ifndef COMPOSITOR_SETTINGS_H
 #define COMPOSITOR_SETTINGS_H
 
+#include <String.h>
 #include <SupportDefs.h>
 
 class BPath;
@@ -23,6 +24,9 @@ struct CompositorSettings {
 	bool		show_overlay;
 	bool		log_timings;
 	bool		stress_invalidate;
+	bool		enable_title_blur_policy;
+	bool		enable_floating_untitled_blur_policy;
+	BString		blur_policy_tokens;
 
 				CompositorSettings();
 

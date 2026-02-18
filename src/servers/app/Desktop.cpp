@@ -94,6 +94,35 @@ square_distance(const BPoint& a, const BPoint& b)
 }
 
 
+static bool
+title_matches_blur_policy_tokens(const char* title, const BString& tokens)
+{
+	if (title == NULL || title[0] == '\0' || tokens.IsEmpty())
+		return false;
+
+	BString lowerTitle(title);
+	lowerTitle.ToLower();
+
+	int32 start = 0;
+	while (start < tokens.Length()) {
+		int32 end = start;
+		while (end < tokens.Length() && tokens[end] != ',')
+			end++;
+
+		BString token;
+		tokens.CopyInto(token, start, end - start);
+		token.Trim();
+		token.ToLower();
+		if (!token.IsEmpty() && lowerTitle.FindFirst(token.String()) >= 0)
+			return true;
+
+		start = end + 1;
+	}
+
+	return false;
+}
+
+
 class KeyboardFilter : public EventFilter {
 	public:
 		KeyboardFilter(Desktop* desktop);
@@ -3600,14 +3629,12 @@ Desktop::_ResolveEffectState(Window* window, bigtime_t now) const
 
 	bool policyBlur = false;
 	const char* title = window->Title();
-	if (title != NULL && title[0] != '\0') {
-		BString lower(title);
-		lower.ToLower();
-		policyBlur = lower.FindFirst("deskbar") >= 0
-			|| lower.FindFirst("notification") >= 0
-			|| lower.FindFirst("notify") >= 0;
+	if (fCompositorSettings.enable_title_blur_policy) {
+		policyBlur = title_matches_blur_policy_tokens(title,
+			fCompositorSettings.blur_policy_tokens);
 	}
-	if (!policyBlur && window->IsFloating()
+	if (!policyBlur && fCompositorSettings.enable_floating_untitled_blur_policy
+		&& window->IsFloating()
 		&& (title == NULL || title[0] == '\0')) {
 		policyBlur = true;
 	}
