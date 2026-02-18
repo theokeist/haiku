@@ -28,6 +28,10 @@ static const char* kForceOpacityOnlyOpaqueKey = "force_opacity_only_opaque";
 static const char* kShowOverlayKey = "show_overlay";
 static const char* kLogTimingsKey = "log_timings";
 static const char* kStressInvalidateKey = "stress_invalidate";
+static const char* kEnableTitleBlurPolicyKey = "enable_title_blur_policy";
+static const char* kEnableFloatingUntitledBlurPolicyKey
+	= "enable_floating_untitled_blur_policy";
+static const char* kBlurPolicyTokensKey = "blur_policy_tokens";
 
 } // namespace
 
@@ -54,6 +58,9 @@ CompositorSettings::SetDefaults()
 	show_overlay = false;
 	log_timings = false;
 	stress_invalidate = false;
+	enable_title_blur_policy = true;
+	enable_floating_untitled_blur_policy = true;
+	blur_policy_tokens = "deskbar,notification,notify";
 }
 
 
@@ -94,6 +101,13 @@ CompositorSettings::LoadFromSettingsFile()
 	log_timings = settings.GetBool(kLogTimingsKey, log_timings);
 	stress_invalidate = settings.GetBool(kStressInvalidateKey,
 		stress_invalidate);
+	enable_title_blur_policy = settings.GetBool(kEnableTitleBlurPolicyKey,
+		enable_title_blur_policy);
+	enable_floating_untitled_blur_policy = settings.GetBool(
+		kEnableFloatingUntitledBlurPolicyKey,
+		enable_floating_untitled_blur_policy);
+	blur_policy_tokens = settings.GetString(kBlurPolicyTokensKey,
+		blur_policy_tokens);
 
 	if (target_fps <= 0)
 		target_fps = 60;

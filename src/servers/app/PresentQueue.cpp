@@ -4,6 +4,7 @@
  */
 #include "PresentQueue.h"
 
+#include <Autolock.h>
 #include <inttypes.h>
 #include <OS.h>
 #include <string.h>

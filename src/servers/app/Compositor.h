@@ -12,6 +12,8 @@
 #include <vector>
 
 class Window;
+#include "CompositorDebugOptions.h"
+
 class RenderingBuffer;
 
 struct WindowSnapshot {
@@ -23,6 +25,9 @@ struct WindowSnapshot {
 	float			blurRadius;
 	BRect			blurRect;
 	Window*			window;
+	uint8			blurRadius;
+	bool			blurBehind;
+	bool			opaqueFastPath;
 };
 
 struct ComposeStats {
@@ -36,6 +41,9 @@ struct ComposeStats {
 	int32			blurCacheMisses;
 	bigtime_t		blurTime;
 	BRegion			overlayRects;
+	int32			cacheHits;
+	int32			cacheMisses;
+	bigtime_t		blurTime;
 	bigtime_t		composeTime;
 };
 
@@ -64,6 +72,13 @@ private:
 		int32			radius;
 	};
 
+	ComposeStats	Compose(RenderingBuffer& dst, RenderingBuffer& src,
+						const BRegion& dirty,
+						const std::vector<WindowSnapshot>& snapshots,
+						const rgb_color& background,
+						const CompositorDebugOptions& options) const;
+
+private:
 	void			_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
 						const rgb_color& background) const;
 	void			_CopyRegion(RenderingBuffer& dst, RenderingBuffer& src,
@@ -92,6 +107,11 @@ private:
 	bool				fLogTimings;
 	bool				fStressInvalidate;
 	mutable bool		fLoggedSnapshotOrder;
+	void			_BlurRegion(RenderingBuffer& dst, const BRegion& region,
+						uint8 radius, int64& _pixelCount,
+						bigtime_t& _elapsed) const;
+	void			_DrawOverlay(RenderingBuffer& dst, const BRegion& dirty,
+						const BRegion& blurRegion) const;
 };
 
 #endif // COMPOSITOR_H
