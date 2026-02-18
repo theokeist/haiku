@@ -37,6 +37,7 @@ class RenderingBuffer;
 class ServerBitmap;
 class Compositor;
 class PresentQueue;
+struct CompositorSettings;
 
 struct WindowSnapshot;
 
@@ -165,6 +166,11 @@ public:
 	// compositor integration
 			void				ConfigureCompositor(int32 width, int32 height,
 									color_space format);
+			void				ApplyCompositorSettings(
+									const CompositorSettings& settings);
+			void				UpdateCompositorState(
+									const std::vector<WindowSnapshot>& snapshots,
+									const rgb_color& background);
 			void				UpdateCompositorState(
 									const std::vector<WindowSnapshot>& snapshots,
 									const rgb_color& background,
@@ -274,6 +280,21 @@ protected:
 			std::vector<WindowSnapshot>
 								fWindowSnapshots;
 			rgb_color			fCompositorBackground;
+			int64				fCompositorFrameCounter;
+			int64				fCompositorLogEveryN;
+			int64				fCompositorComposeAccum;
+			int32				fCompositorComposeCount;
+			bool				fCompositorAnimActive;
+			bool				fCompositorEnabled;
+			bool				fCompositorAnimationsEnabled;
+			bool				fCompositorBlurEnabled;
+			bool				fCompositorTranslucencyEnabled;
+			bool				fCompositorShowOverlay;
+			bool				fCompositorLogTimings;
+			bool				fCompositorStressInvalidate;
+			int32				fCompositorTargetFps;
+			int32				fCompositorLogLevel;
+			BLocker				fCompositorSettingsLock;
 			CompositorDebugOptions	fCompositorDebugOptions;
 			int64				fCompositorFrameCounter;
 			int64				fCompositorLogEveryN;
@@ -281,6 +302,9 @@ protected:
 			BLocker				fPresentInvalidateLock;
 			thread_id			fPresentThread;
 			sem_id				fPresentSemaphore;
+			volatile int32		fPresentScheduled;
+			volatile int32		fPresentThreadRunning;
+			volatile int32		fPendingInvalidations;
 			int32				fPresentScheduled;
 			int32				fPresentThreadRunning;
 			int32				fPendingInvalidations;

@@ -113,6 +113,7 @@ SubInclude HAIKU_TOP src kits bluetooth ;
 SubInclude HAIKU_TOP src kits debug ;
 SubInclude HAIKU_TOP src kits debugger ;
 SubInclude HAIKU_TOP src kits device ;
+SubInclude HAIKU_TOP src kits experimentalcompositor ;
 SubInclude HAIKU_TOP src kits game ;
 SubInclude HAIKU_TOP src kits interface ;
 SubInclude HAIKU_TOP src kits locale ;

@@ -6,13 +6,11 @@
 #define PRESENT_QUEUE_H
 
 #include <AutoDeleter.h>
-#include <Autolock.h>
 #include <Locker.h>
 #include <Region.h>
 
-#include "MallocBuffer.h"
-
 class HWInterface;
+class MallocBuffer;
 class RenderingBuffer;
 
 class PresentQueue {
@@ -29,6 +27,7 @@ public:
 									const BRegion& dirty);
 			bigtime_t			PresentNext(HWInterface& interface,
 									bool vsync);
+			void				SetLogLevel(int32 logLevel);
 
 			int32				BufferCount() const { return fBufferCount; }
 
@@ -46,6 +45,7 @@ private:
 			int32				fRenderIndex;
 			int32				fReadyIndex;
 			int32				fBufferCount;
+			int32				fLogLevel;
 			BRegion				fPendingDirty;
 			BLocker				fLock;
 };

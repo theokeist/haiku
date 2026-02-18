@@ -31,6 +31,7 @@
 #include "ScreenManager.h"
 #include "ServerProtocol.h"
 #include "ServerWindow.h"
+#include "Window.h"
 
 static const int32 kMsgAlphaDebugPoll = 'adpl';
 static const int32 kMsgCompositorDebugPoll = 'cdpl';
@@ -101,6 +102,7 @@ AppServer::AppServer(status_t* status)
 	BRoster::Private().SendTo(&request, NULL, false);
 #endif
 
+	_LoadCompositorSettings();
 	_UpdateAlphaDebugSetting(true);
 	fAlphaDebugRunner = new(std::nothrow) BMessageRunner(BMessenger(this),
 		new BMessage(kMsgAlphaDebugPoll), 1000000);
@@ -156,19 +158,95 @@ AppServer::MessageReceived(BMessage* message)
 			}
 			break;
 		}
-
-		case AS_INTERNAL_SET_COMPOSITOR_DEBUG_OPTIONS:
+		case AS_PRIVATE_SET_WINDOW_EFFECTS:
 		{
-			CompositorDebugOptions options;
-			options.forceBlurAll = message->GetBool("forceBlurAll", false);
-			options.forceOpacity = message->GetFloat("forceOpacity", -1.0f);
-			options.showOverlay = message->GetBool("showOverlay", false);
-			options.logTimings = message->GetBool("logTimings", false);
-			options.stressInvalidate = message->GetBool("stressInvalidate", false);
-			fCompositorDebugOptions = options;
-			_ApplyCompositorDebugSetting(options);
+			BMessage reply;
+			status_t status = B_BAD_VALUE;
+			int32 windowToken = message->GetInt32("window", B_NULL_TOKEN);
+			bool animate = message->GetBool("animate", false);
+			bigtime_t duration = message->GetInt64("duration", 150000);
+
+			float alpha = 1.0f;
+			bool blurEnabled = false;
+			float blurRadius = 0.0f;
+			bool hasAlpha = message->FindFloat("alpha", &alpha) == B_OK;
+			bool hasBlur = message->FindBool("blur", &blurEnabled) == B_OK;
+			bool hasBlurRadius = message->FindFloat("blur_radius", &blurRadius)
+				== B_OK;
+
+			if (hasAlpha || hasBlur || hasBlurRadius) {
+				BAutolock tokenLocker(BPrivate::gDefaultTokens);
+				ServerWindow* window = NULL;
+				if (windowToken != B_NULL_TOKEN
+					&& BPrivate::gDefaultTokens.GetToken(windowToken,
+						B_SERVER_TOKEN, (void**)&window) == B_OK
+					&& window != NULL
+					&& window->Window() != NULL) {
+					Window* effectsWindow = window->Window();
+					if (hasAlpha)
+						effectsWindow->SetAlpha(alpha, animate, duration);
+					if (hasBlur)
+						effectsWindow->SetBlurEnabled(blurEnabled);
+					if (hasBlurRadius)
+						effectsWindow->SetBlurRadius(blurRadius);
+
+					reply.AddFloat("alpha", effectsWindow->Alpha());
+					reply.AddBool("blur", effectsWindow->BlurEnabled());
+					reply.AddFloat("blur_radius", effectsWindow->BlurRadius());
+					reply.AddInt64("duration",
+						effectsWindow->AlphaAnimationDuration());
+					status = B_OK;
+				}
+			}
+
+			reply.what = status;
+			message->SendReply(&reply);
 			break;
 		}
+		case AS_INTERNAL_SET_COMPOSITOR_DEBUG_OPTIONS:
+		{
+			fCompositorSettings.force_blur_all
+				= message->GetBool("force_blur_all",
+					fCompositorSettings.force_blur_all);
+			fCompositorSettings.force_opacity = message->GetFloat("force_opacity",
+				fCompositorSettings.force_opacity);
+			fCompositorSettings.force_opacity_only_opaque
+				= message->GetBool("force_opacity_only_opaque",
+					fCompositorSettings.force_opacity_only_opaque);
+			fCompositorSettings.show_overlay = message->GetBool("show_overlay",
+				fCompositorSettings.show_overlay);
+			fCompositorSettings.log_timings = message->GetBool("log_timings",
+				fCompositorSettings.log_timings);
+			fCompositorSettings.stress_invalidate
+				= message->GetBool("stress_invalidate",
+					fCompositorSettings.stress_invalidate);
+
+			if (fCompositorSettings.force_opacity > 1.0f)
+				fCompositorSettings.force_opacity = 1.0f;
+			if (fCompositorSettings.force_opacity < 0.0f
+				&& fCompositorSettings.force_opacity != -1.0f) {
+				fCompositorSettings.force_opacity = -1.0f;
+			}
+
+			_ApplyCompositorSettings();
+			_InvalidateAllDesktops();
+
+			BMessage reply(B_OK);
+			reply.AddBool("force_blur_all", fCompositorSettings.force_blur_all);
+			reply.AddFloat("force_opacity", fCompositorSettings.force_opacity);
+			reply.AddBool("force_opacity_only_opaque",
+				fCompositorSettings.force_opacity_only_opaque);
+			reply.AddBool("show_overlay", fCompositorSettings.show_overlay);
+			reply.AddBool("log_timings", fCompositorSettings.log_timings);
+			reply.AddBool("stress_invalidate",
+				fCompositorSettings.stress_invalidate);
+			message->SendReply(&reply);
+			break;
+		}
+		case AS_INTERNAL_RELOAD_COMPOSITOR_SETTINGS:
+			_LoadCompositorSettings();
+			_InvalidateAllDesktops();
+			break;
 
 		case AS_GET_DESKTOP:
 		{
@@ -212,9 +290,11 @@ AppServer::MessageReceived(BMessage* message)
 }
 
 
-status_t
-AppServer::_AlphaDebugSettingsPath(BPath& path) const
+void
+AppServer::_LoadCompositorSettings()
 {
+	fCompositorSettings.LoadFromSettingsFile();
+	_ApplyCompositorSettings();
 	status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
 	if (status < B_OK)
 		return status;
@@ -264,12 +344,19 @@ AppServer::_UpdateAlphaDebugSetting(bool force)
 
 
 void
-AppServer::_ApplyAlphaDebugSetting(bool enabled)
+AppServer::_ApplyCompositorSettings()
 {
 	BAutolock locker(fDesktopLock);
 	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
 		Desktop* desktop = fDesktops.ItemAt(i);
 		if (desktop != NULL)
+			desktop->ApplyCompositorSettings(fCompositorSettings);
+	}
+}
+
+
+void
+AppServer::_InvalidateAllDesktops()
 			desktop->SetAlphaDebugEnabled(enabled);
 	}
 }
@@ -350,6 +437,7 @@ AppServer::_ApplyCompositorDebugSetting(const CompositorDebugOptions& options)
 	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
 		Desktop* desktop = fDesktops.ItemAt(i);
 		if (desktop != NULL)
+			desktop->Redraw();
 			desktop->SetCompositorDebugOptions(options);
 	}
 }
@@ -409,7 +497,10 @@ AppServer::_CreateDesktop(uid_t userID, const char* targetScreen)
 		return NULL;
 	}
 
-	return desktop.Detach();
+	Desktop* created = desktop.Detach();
+	if (created != NULL)
+		created->ApplyCompositorSettings(fCompositorSettings);
+	return created;
 }
 
 

@@ -4,6 +4,7 @@
  */
 #include <AppKit.h>
 #include <DeviceKit.h>
+#include <ExperimentalCompositorKit.h>
 #include <GameKit.h>
 #include <InterfaceKit.h>
 #include <KernelKit.h>
