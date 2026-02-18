@@ -26,6 +26,7 @@
 #include "IntRect.h"
 #include "MultiLocker.h"
 #include "ServerCursor.h"
+#include "../CompositorDebugOptions.h"
 
 
 class BString;
@@ -170,6 +171,10 @@ public:
 			void				UpdateCompositorState(
 									const std::vector<WindowSnapshot>& snapshots,
 									const rgb_color& background);
+			void				UpdateCompositorState(
+									const std::vector<WindowSnapshot>& snapshots,
+									const rgb_color& background,
+									const CompositorDebugOptions& options);
 			void				PresentBuffer(RenderingBuffer* buffer,
 									const BRegion& dirty);
 
@@ -290,6 +295,9 @@ protected:
 			int32				fCompositorTargetFps;
 			int32				fCompositorLogLevel;
 			BLocker				fCompositorSettingsLock;
+			CompositorDebugOptions	fCompositorDebugOptions;
+			int64				fCompositorFrameCounter;
+			int64				fCompositorLogEveryN;
 			BRegion				fPendingInvalidate;
 			BLocker				fPresentInvalidateLock;
 			thread_id			fPresentThread;
@@ -297,6 +305,9 @@ protected:
 			volatile int32		fPresentScheduled;
 			volatile int32		fPresentThreadRunning;
 			volatile int32		fPendingInvalidations;
+			int32				fPresentScheduled;
+			int32				fPresentThreadRunning;
+			int32				fPendingInvalidations;
 			int64				fPresentCounter;
 			bigtime_t			fPresentLogTime;
 

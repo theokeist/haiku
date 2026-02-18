@@ -15,11 +15,14 @@
 #include <Locker.h>
 #include <ObjectList.h>
 #include <OS.h>
+#include <Path.h>
 #include <String.h>
 #include <Window.h>
+#include <MessageRunner.h>
 
 #include "MessageLooper.h"
 #include "CompositorSettings.h"
+#include "CompositorDebugOptions.h"
 #include "ServerConfig.h"
 
 
@@ -55,11 +58,24 @@ private:
 			void				_LoadCompositorSettings();
 			void				_ApplyCompositorSettings();
 			void				_InvalidateAllDesktops();
+			void				_UpdateAlphaDebugSetting(bool force);
+			status_t			_AlphaDebugSettingsPath(BPath& path) const;
+			void				_ApplyAlphaDebugSetting(bool enabled);
+			void				_UpdateCompositorDebugSetting(bool force);
+			status_t			_CompositorDebugSettingsPath(BPath& path) const;
+			void				_ApplyCompositorDebugSetting(
+									const CompositorDebugOptions& options);
 
 private:
 			BObjectList<Desktop> fDesktops;
 			BLocker				fDesktopLock;
 			CompositorSettings	fCompositorSettings;
+			BMessageRunner*		fAlphaDebugRunner;
+			BMessageRunner*		fCompositorDebugRunner;
+			bool				fAlphaDebugEnabled;
+			time_t				fAlphaDebugSettingsMTime;
+			CompositorDebugOptions	fCompositorDebugOptions;
+			time_t				fCompositorDebugSettingsMTime;
 };
 
 

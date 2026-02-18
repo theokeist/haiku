@@ -9,6 +9,7 @@
 
 #include "HWInterface.h"
 
+#include <Autolock.h>
 #include <OS.h>
 #include <inttypes.h>
 #include <new>
@@ -48,6 +49,7 @@ HWInterfaceListener::~HWInterfaceListener()
 HWInterface::HWInterface()
 	:
 	MultiLocker("hw interface lock"),
+	fCursorAreaBackup(NULL),
 	fFloatingOverlaysLock("floating overlays lock"),
 	fCursor(NULL),
 	fDragBitmap(NULL),
@@ -57,6 +59,7 @@ HWInterface::HWInterface()
 	fCursorObscured(false),
 	fHardwareCursorEnabled(false),
 	fCursorLocation(0, 0),
+	fTrackingRect(),
 	fVGADevice(-1),
 	fListeners(20),
 	fCompositorBackground((rgb_color){0, 0, 0, 255}),
@@ -75,6 +78,13 @@ HWInterface::HWInterface()
 	fCompositorTargetFps(60),
 	fCompositorLogLevel(0),
 	fCompositorSettingsLock("compositor settings lock"),
+	fPresentQueue(NULL),
+	fCompositor(NULL),
+	fWindowSnapshots(),
+	fCompositorBackground((rgb_color){0, 0, 0, 255}),
+	fCompositorFrameCounter(0),
+	fCompositorLogEveryN(120),
+	fPendingInvalidate(),
 	fPresentInvalidateLock("present invalidate lock"),
 	fPresentThread(-1),
 	fPresentSemaphore(-1),
@@ -355,6 +365,9 @@ HWInterface::InvalidateRegion(const BRegion& region)
 		BRegion clipped(region);
 		IntRect bufferClip(backBuffer->Bounds());
 		clipped.IntersectWith((BRect)bufferClip);
+		BRegion clipRegion;
+		clipRegion.Set((BRect)bufferClip);
+		clipped.IntersectWith(&clipRegion);
 
 		if (clipped.CountRects() == 0)
 			return B_OK;
@@ -551,6 +564,17 @@ HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
 
 	BRegion region(dirty);
 	region.IntersectWith((BRect)buffer->Bounds());
+	RenderingBuffer* front = FrontBuffer();
+	if (buffer == NULL || front == NULL)
+		return;
+
+	BRegion region(dirty);
+	BRegion clipRegion;
+	clipRegion.Set((BRect)buffer->Bounds());
+	region.IntersectWith(&clipRegion);
+	BRegion frontClip;
+	frontClip.Set((BRect)front->Bounds());
+	region.IntersectWith(&frontClip);
 	if (region.CountRects() == 0)
 		return;
 
@@ -568,7 +592,7 @@ HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
 		_CopyToFront(srcOffset, srcBPR, r.left, r.top, r.right, r.bottom);
 	}
 
-	_DrawCursor(IntRect(region.Frame()));
+	_DrawCursor(_CursorFrame());
 
 	if (cursorLocked)
 		fFloatingOverlaysLock.Unlock();
@@ -727,6 +751,7 @@ HWInterface::_ProcessPendingInvalidate()
 		pending, fWindowSnapshots, fCompositorBackground);
 	if (showOverlay && stats.overlayRects.CountRects() > 0)
 		pending.Include(&stats.overlayRects);
+		pending, snapshots, background, options);
 
 	fPresentQueue->Submit(renderTarget, pending);
 	bigtime_t presentTime = fPresentQueue->PresentNext(*this, true);
