@@ -7,6 +7,8 @@
 #include <Message.h>
 #include <Messenger.h>
 
+#include <private/app/ServerProtocol.h>
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,7 +55,10 @@ main(int argc, char** argv)
 		return 1;
 	}
 
-	BMessage message('wAlp');
+	// Alpha is a normalized opacity scalar: 0 = transparent, 1 = opaque.
+	// Message routing is handled in app_server/Desktop so window locking rules
+	// remain centralized.
+	BMessage message(AS_INTERNAL_SET_WINDOW_ALPHA);
 	message.AddInt32("window", (int32)windowToken);
 	message.AddFloat("alpha", alpha);
 

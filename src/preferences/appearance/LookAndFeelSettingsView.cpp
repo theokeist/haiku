@@ -538,7 +538,7 @@ LookAndFeelSettingsView::_AlphaDebugSettingsPath(BPath& path) const
 		return status;
 
 	status = create_directory(path.Path(), 0755);
-	if (status < B_OK)
+	if (status < B_OK && status != B_FILE_EXISTS)
 		return status;
 
 	return path.Append("alpha_debug");
@@ -557,7 +557,7 @@ LookAndFeelSettingsView::_CompositorDebugSettingsPath(BPath& path) const
 		return status;
 
 	status = create_directory(path.Path(), 0755);
-	if (status < B_OK)
+	if (status < B_OK && status != B_FILE_EXISTS)
 		return status;
 
 	return path.Append("compositor_debug");
@@ -657,6 +657,13 @@ LookAndFeelSettingsView::_SetAlphaDebugEnabled(bool enabled)
 	settings.AddBool("enabled", enabled);
 	if (settings.Flatten(&file) != B_OK)
 		return;
+
+	// Notify app_server immediately so alpha-debug visuals update live without
+	// waiting for settings polling.
+	settings.what = AS_INTERNAL_SET_ALPHA_DEBUG;
+	BMessenger messenger("application/x-vnd.Haiku-app_server");
+	if (messenger.IsValid())
+		messenger.SendMessage(&settings);
 
 	fCurrentAlphaDebugEnabled = enabled;
 	fAlphaDebugCheckBox->SetValue(enabled ? B_CONTROL_ON : B_CONTROL_OFF);

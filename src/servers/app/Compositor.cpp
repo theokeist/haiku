@@ -15,6 +15,21 @@
 
 namespace {
 
+static inline bool
+_IsSupported32BitColorSpace(color_space colorSpace)
+{
+	// Current compositor math is 4-byte pixel oriented; guard unsupported
+	// formats before entering copy/blend/blur paths.
+	return colorSpace == B_RGBA32 || colorSpace == B_RGB32;
+}
+
+
+static inline bool
+_IsSupported32BitBuffer(const RenderingBuffer& buffer)
+{
+	return _IsSupported32BitColorSpace(buffer.ColorSpace());
+}
+
 static inline int64
 _RegionPixelCount(const BRegion& region)
 {
@@ -98,10 +113,13 @@ Compositor::Compose(RenderingBuffer& dst, RenderingBuffer& src,
 			stats.cacheMisses++;
 		}
 
-		if (it->opaqueFastPath)
+		if (it->opaqueFastPath) {
+			stats.copyPathWindows++;
 			_CopyRegion(dst, src, region);
-		else
+		} else {
+			stats.blendPathWindows++;
 			_BlendRegion(dst, src, region, it->alpha);
+		}
 	}
 
 	if (options.showOverlay)
@@ -119,7 +137,7 @@ Compositor::_BlurRegion(RenderingBuffer& dst, const BRegion& region,
 	bigtime_t start = system_time();
 	if (radius == 0)
 		return;
-	if (dst.ColorSpace() != B_RGBA32 && dst.ColorSpace() != B_RGB32)
+	if (!_IsSupported32BitBuffer(dst))
 		return;
 
 	BRegion clipped(region);
@@ -200,7 +218,7 @@ void
 Compositor::_DrawOverlay(RenderingBuffer& dst, const BRegion& dirty,
 	const BRegion& blurRegion) const
 {
-	if (dst.ColorSpace() != B_RGBA32 && dst.ColorSpace() != B_RGB32)
+	if (!_IsSupported32BitBuffer(dst))
 		return;
 
 	uint8* bits = (uint8*)dst.Bits();
@@ -245,7 +263,7 @@ void
 Compositor::_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
 	const rgb_color& background) const
 {
-	if (dst.ColorSpace() != B_RGBA32 && dst.ColorSpace() != B_RGB32)
+	if (!_IsSupported32BitBuffer(dst))
 		return;
 
 	BRegion clipped(dirty);
@@ -287,9 +305,9 @@ void
 Compositor::_CopyRegion(RenderingBuffer& dst, RenderingBuffer& src,
 	const BRegion& region) const
 {
-	if (dst.ColorSpace() != B_RGBA32 && dst.ColorSpace() != B_RGB32)
+	if (!_IsSupported32BitBuffer(dst))
 		return;
-	if (src.ColorSpace() != B_RGBA32 && src.ColorSpace() != B_RGB32)
+	if (!_IsSupported32BitBuffer(src))
 		return;
 
 	BRegion clipped(region);
@@ -332,9 +350,9 @@ void
 Compositor::_BlendRegion(RenderingBuffer& dst, RenderingBuffer& src,
 	const BRegion& region, float alpha) const
 {
-	if (dst.ColorSpace() != B_RGBA32 && dst.ColorSpace() != B_RGB32)
+	if (!_IsSupported32BitBuffer(dst))
 		return;
-	if (src.ColorSpace() != B_RGBA32 && src.ColorSpace() != B_RGB32)
+	if (!_IsSupported32BitBuffer(src))
 		return;
 
 	if (alpha <= 0.0f)

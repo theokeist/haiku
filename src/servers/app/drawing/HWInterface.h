@@ -288,6 +288,8 @@ protected:
 			bigtime_t			fPresentLogTime;
 
 private:
+			// Present-thread lifecycle and scheduling helpers for coalesced
+			// invalidation/composition in compositor mode.
 			status_t			_StartPresentThread();
 			void				_StopPresentThread();
 			void				_SchedulePresent();

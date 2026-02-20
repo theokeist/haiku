@@ -140,6 +140,8 @@ static WindowSnapshot
 resolve_effect_state(const Window* window,
 	const CompositorDebugOptions& options)
 {
+	// Resolve per-window compositor inputs (opacity/blur/fast-path) from the
+	// window's native state plus current global debug overrides.
 	WindowSnapshot snapshot;
 	snapshot.visible = window->VisibleRegion();
 	snapshot.alpha = window->Alpha();
@@ -163,7 +165,15 @@ resolve_effect_state(const Window* window,
 	if (options.stressInvalidate && snapshot.blurBehind)
 		snapshot.blurRadius = 10;
 
-	snapshot.opaqueFastPath = false;
+	// Opaque windows can use a memcpy copy-path in the compositor, which reduces
+	// blend cost during frequent moves/resizes.
+	snapshot.opaqueFastPath = !snapshot.blurBehind && snapshot.alpha >= 0.99f;
+
+	// Retained-surface metadata (plumbing only, no behavior change yet).
+	snapshot.retained.surfaceToken = window->ServerWindow()->ServerToken();
+	snapshot.retained.surfaceGeneration = 0;
+	snapshot.retained.lastKnownDamageRects = snapshot.visible.CountRects();
+	snapshot.retained.valid = true;
 	return snapshot;
 }
 
@@ -2500,6 +2510,30 @@ Desktop::WindowAction(int32 windowToken, int32 action)
 }
 
 
+bool
+Desktop::SetWindowAlpha(int32 windowToken, float alpha)
+{
+	// Keep alpha updates on the Desktop path to preserve lock ordering and avoid
+	// cross-desktop token races.
+	if (!LockAllWindows())
+		return false;
+
+	::ServerWindow* serverWindow = NULL;
+	Window* window = NULL;
+	bool success = BPrivate::gDefaultTokens.GetToken(windowToken,
+			B_SERVER_TOKEN, (void**)&serverWindow) == B_OK
+		&& serverWindow != NULL
+		&& (window = serverWindow->Window()) != NULL
+		&& window->Desktop() == this;
+
+	if (success)
+		window->SetAlpha(alpha);
+
+	UnlockAllWindows();
+	return success;
+}
+
+
 void
 Desktop::WriteWindowList(team_id team, BPrivate::LinkSender& sender)
 {
@@ -3634,11 +3668,8 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 			if (window->VisibleRegion().CountRects() == 0)
 				continue;
 
-			WindowSnapshot snapshot;
-			snapshot = resolve_effect_state(window, fCompositorDebugOptions);
-			snapshot.visible = window->VisibleRegion();
-			snapshot.alpha = window->Alpha();
-			snapshot.opaqueFastPath = false;
+			WindowSnapshot snapshot
+				= resolve_effect_state(window, fCompositorDebugOptions);
 			snapshots.push_back(snapshot);
 		}
 

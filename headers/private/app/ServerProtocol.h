@@ -369,7 +369,10 @@ enum {
 	AS_VIEW_CLIP_TO_RECT,
 	AS_VIEW_CLIP_TO_SHAPE,
 
-	// internal debug
+	// internal debug/runtime tuning messages used by app_server tooling.
+	// These are intentionally in the shared protocol header so CLI/UI senders
+	// and app_server receivers stay in sync.
+	AS_INTERNAL_SET_ALPHA_DEBUG = 'aDbg',
 	AS_INTERNAL_SET_WINDOW_ALPHA = 'wAlp',
 	AS_INTERNAL_SET_COMPOSITOR_DEBUG_OPTIONS = 'cDbg',
 

@@ -39,7 +39,7 @@ settings_path(BPath& path)
 	if (status != B_OK)
 		return status;
 	status = create_directory(path.Path(), 0755);
-	if (status != B_OK)
+	if (status != B_OK && status != B_FILE_EXISTS)
 		return status;
 	return path.Append("compositor_debug");
 }

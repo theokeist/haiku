@@ -30,6 +30,41 @@
 
 using std::nothrow;
 
+namespace {
+
+static void
+_AppendStressReplayRegions(const BRegion& base, const IntRect& bounds,
+	int64 frameCounter, std::vector<BRegion>& out)
+{
+	if (base.CountRects() == 0)
+		return;
+
+	BRegion boundsRegion;
+	boundsRegion.Set((BRect)bounds);
+
+	// Replay 1: shifted copy of current dirty region to emulate rapid moves.
+	BRegion shifted(base);
+	shifted.OffsetBy(8.0f, 8.0f);
+	shifted.IntersectWith(&boundsRegion);
+	if (shifted.CountRects() > 0)
+		out.push_back(shifted);
+
+	// Replay 2: vertical strip to emulate occlusion/unocclusion damage.
+	BRect frame = bounds;
+	float center = frame.left + frame.Width() / 2.0f;
+	BRect strip(center - 24.0f, frame.top, center + 24.0f, frame.bottom);
+	BRegion occlusionStrip(strip);
+	occlusionStrip.IntersectWith(&boundsRegion);
+	if (occlusionStrip.CountRects() > 0)
+		out.push_back(occlusionStrip);
+
+	// Replay 3: periodic full-screen invalidation burst.
+	if ((frameCounter % 4) == 0)
+		out.push_back(boundsRegion);
+}
+
+} // namespace
+
 
 HWInterfaceListener::HWInterfaceListener()
 {
@@ -478,7 +513,6 @@ HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
 		RenderingBuffer* buffer = DrawingBuffer();
 		if (buffer != NULL) {
-			BAutolock _(fPresentInvalidateLock);
 			BRegion fullBounds;
 			fullBounds.Set((BRect)buffer->Bounds());
 			fPendingInvalidate.Include(&fullBounds);
@@ -578,6 +612,7 @@ HWInterface::_SchedulePresent()
 	if (fPresentSemaphore < 0)
 		return;
 
+	// Coalesce wakeups: only release the semaphore on a 0 -> 1 transition.
 	if (atomic_test_and_set(&fPresentScheduled, 1, 0) == 0)
 		release_sem(fPresentSemaphore);
 }
@@ -614,11 +649,43 @@ HWInterface::_ProcessPendingInvalidate()
 		return;
 	}
 
-	ComposeStats stats = fCompositor->Compose(*renderTarget, *source,
-		pending, snapshots, background, options);
+	std::vector<BRegion> replayRegions;
+	replayRegions.push_back(pending);
+	if (options.stressInvalidate)
+		_AppendStressReplayRegions(pending, source->Bounds(),
+			fCompositorFrameCounter, replayRegions);
 
-	fPresentQueue->Submit(renderTarget, pending);
-	bigtime_t presentTime = fPresentQueue->PresentNext(*this, true);
+	ComposeStats stats = {};
+	bigtime_t presentTime = 0;
+	for (size_t i = 0; i < replayRegions.size(); i++) {
+		RenderingBuffer* target = i == 0
+			? renderTarget : fPresentQueue->AcquireForRender();
+		if (target == NULL)
+			break;
+
+		ComposeStats passStats = fCompositor->Compose(*target, *source,
+			replayRegions[i], snapshots, background, options);
+		if (i == 0)
+			stats = passStats;
+		else {
+			stats.dirtyRects += passStats.dirtyRects;
+			stats.dirtyPixels += passStats.dirtyPixels;
+			stats.windowsComposed += passStats.windowsComposed;
+			stats.copyPathWindows += passStats.copyPathWindows;
+			stats.blendPathWindows += passStats.blendPathWindows;
+			stats.alphaWindows += passStats.alphaWindows;
+			stats.blurredWindows += passStats.blurredWindows;
+			stats.blurredPixels += passStats.blurredPixels;
+			stats.cacheHits += passStats.cacheHits;
+			stats.cacheMisses += passStats.cacheMisses;
+			stats.blurTime += passStats.blurTime;
+			stats.composeTime += passStats.composeTime;
+		}
+
+		fPresentQueue->Submit(target, replayRegions[i]);
+		presentTime += fPresentQueue->PresentNext(*this, true);
+	}
+	PresentQueue::PressureMetrics pressure = fPresentQueue->GetPressureMetrics();
 	UnlockExclusiveAccess();
 
 	int32 invalidations = atomic_get(&fPendingInvalidations);
@@ -630,15 +697,22 @@ HWInterface::_ProcessPendingInvalidate()
 		debug_printf("compositor: frame %" B_PRId64
 			" invalidations=%" B_PRId32 " dirtyRects=%" B_PRId32
 			" dirtyPixels=%" B_PRId64 " windows=%" B_PRId32
+			" copy=%" B_PRId32 " blend=%" B_PRId32
 			" alpha=%" B_PRId32 " blurred=%" B_PRId32
 			" blurPixels=%" B_PRId64 " blurTime=%" B_PRId64 "us"
 			" cache(h/m)=%" B_PRId32 "/%" B_PRId32
+			" queue(reuse/overwrite/unknown)=%" B_PRId64 "/%" B_PRId64
+			"/%" B_PRId64
 			" compose=%" B_PRId64 "us"
 			" present=%" B_PRId64 "us\n",
 			fCompositorFrameCounter, invalidations, stats.dirtyRects,
-			stats.dirtyPixels, stats.windowsComposed, stats.alphaWindows,
+			stats.dirtyPixels, stats.windowsComposed,
+			stats.copyPathWindows, stats.blendPathWindows,
+			stats.alphaWindows,
 			stats.blurredWindows, stats.blurredPixels, stats.blurTime,
 			stats.cacheHits, stats.cacheMisses,
+			pressure.acquireReuseCount, pressure.readyOverwriteCount,
+			pressure.unknownSubmitCount,
 			stats.composeTime, presentTime);
 	}
 
@@ -672,10 +746,17 @@ HWInterface::_PresentThreadEntry(void* data)
 		while (atomic_get(&interface->fPresentThreadRunning) != 0) {
 			snooze(2000);
 			interface->_ProcessPendingInvalidate();
-			if (!interface->_HasPendingInvalidate()) {
-				atomic_set(&interface->fPresentScheduled, 0);
+
+			// Mark scheduling slot as free. If new work arrived while composing,
+			// re-arm before leaving the loop so producers don't miss a wakeup.
+			atomic_set(&interface->fPresentScheduled, 0);
+			if (!interface->_HasPendingInvalidate())
 				break;
-			}
+
+			// New invalidations arrived while processing. Re-arm the scheduled
+			// state so producers won't skip the semaphore release.
+			if (atomic_test_and_set(&interface->fPresentScheduled, 1, 0) != 0)
+				break;
 		}
 	}
 	return B_OK;

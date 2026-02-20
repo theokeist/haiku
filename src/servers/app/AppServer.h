@@ -54,11 +54,15 @@ private:
 									const char* targetScreen);
 
 			void				_LaunchInputServer();
+			// Pull alpha-debug settings from disk and apply if changed.
 			void				_UpdateAlphaDebugSetting(bool force);
 			status_t			_AlphaDebugSettingsPath(BPath& path) const;
+			// Broadcast global alpha-debug state to all desktops.
 			void				_ApplyAlphaDebugSetting(bool enabled);
+			// Pull compositor debug settings from disk and apply if changed.
 			void				_UpdateCompositorDebugSetting(bool force);
 			status_t			_CompositorDebugSettingsPath(BPath& path) const;
+			// Broadcast compositor debug options to all desktops.
 			void				_ApplyCompositorDebugSetting(
 									const CompositorDebugOptions& options);
 

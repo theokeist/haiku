@@ -15,20 +15,34 @@
 class HWInterface;
 class RenderingBuffer;
 
+// Thread-safe, small ring queue for compositor output buffers.
+// Producers acquire/submit render targets while the present thread consumes
+// the latest ready frame and presents coalesced dirty regions.
 class PresentQueue {
 public:
-								PresentQueue(int32 width, int32 height,
-									color_space format);
+			struct PressureMetrics {
+				int64	acquireReuseCount;
+				int64	readyOverwriteCount;
+				int64	unknownSubmitCount;
+			};
+
+							PresentQueue(int32 width, int32 height,
+								color_space format);
 
 			status_t			InitCheck() const;
 			status_t			Resize(int32 width, int32 height,
 									color_space format);
 
+			// Returns a writable back buffer for the next compose pass.
 			RenderingBuffer*	AcquireForRender();
+			// Marks a rendered buffer ready and unions its dirty region.
 			void				Submit(RenderingBuffer* buffer,
 									const BRegion& dirty);
+			// Presents the latest ready buffer and returns present duration in us.
 			bigtime_t			PresentNext(HWInterface& interface,
 									bool vsync);
+			// Snapshot queue-pressure counters for logging/diagnostics.
+			PressureMetrics		GetPressureMetrics();
 
 			int32				BufferCount() const { return fBufferCount; }
 
@@ -47,6 +61,9 @@ private:
 			int32				fReadyIndex;
 			int32				fBufferCount;
 			BRegion				fPendingDirty;
+			int64				fAcquireReuseCount;
+			int64				fReadyOverwriteCount;
+			int64				fUnknownSubmitCount;
 			BLocker				fLock;
 };
 
