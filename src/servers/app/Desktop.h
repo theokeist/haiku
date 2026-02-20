@@ -264,6 +264,9 @@ public:
 			void				MinimizeApplication(team_id team);
 			void				BringApplicationToFront(team_id team);
 			void				WindowAction(int32 windowToken, int32 action);
+			// Internal app_server helper: set window alpha by server token while
+			// holding Desktop window locks.
+			bool				SetWindowAlpha(int32 windowToken, float alpha);
 
 			void				WriteWindowList(team_id team,
 									BPrivate::LinkSender& sender);
