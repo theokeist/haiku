@@ -1,0 +1,28 @@
+Experimental Compositor Kit
+===========================
+
+Overview
+--------
+The Experimental Compositor Kit provides a lightweight client API for talking to
+an experimental compositor service. The API is intentionally small and is meant
+for prototyping new effects outside of the primary Interface Kit.
+
+Public API
+----------
+The public entry point is the BExperimentalCompositor class. The class exposes
+methods to connect, set an effect name, and upload a raw texture payload. The
+API is declared in <ExperimentalCompositorKit.h>.
+
+Protocol
+--------
+Messages are exchanged using the service name
+"x-vnd.haiku-experimental-compositor" and the message codes defined in
+<experimentalcompositor/ExperimentalCompositorProtocol.h>. The current protocol
+version is B_EXPERIMENTAL_COMPOSITOR_PROTOCOL_VERSION and clients should send
+and expect replies with the kExperimentalCompositorLastError status field.
+
+Sample
+------
+The ExperimentalCompositor app under src/apps/experimentalcompositor demonstrates
+connecting to the service, setting an effect, uploading a 2x2 texture, and then
+exiting. It can be used as a reference for integrating the kit in other code.

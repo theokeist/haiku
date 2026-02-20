@@ -50,6 +50,9 @@ private:
 
 			bool				_DoubleScrollBarArrows();
 			void				_SetDoubleScrollBarArrows(bool doubleArrows);
+			bool				_AlphaDebugControlsEnabled();
+			void				_SetAlphaDebugControls(bool enabled);
+			status_t			_SettingsPath(BPath& path) const;
 			bool				_AlphaDebugEnabled() const;
 			void				_SetAlphaDebugEnabled(bool enabled);
 			status_t			_AlphaDebugSettingsPath(BPath& path) const;
@@ -83,6 +86,8 @@ private:
 			BString				fCurrentControlLook;
 
 			bool				fSavedDoubleArrowsValue : 1;
+			bool				fSavedAlphaDebugValue : 1;
+			bool				fCurrentAlphaDebugValue : 1;
 			bool				fSavedAlphaDebugEnabled : 1;
 			bool				fCurrentAlphaDebugEnabled : 1;
 			bool				fSavedForceEffectsAll : 1;

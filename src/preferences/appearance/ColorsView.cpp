@@ -12,6 +12,8 @@
 
 
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <Alert.h>
 #include <Catalog.h>
@@ -41,6 +43,7 @@
 #define AUTO_ADJUST_CHANGED 'madj'
 #define UPDATE_COLOR 'upcl'
 #define ATTRIBUTE_CHOSEN 'atch'
+#define COLOR_TEXT_CHANGED 'ctch'
 
 using BPrivate::BColorItem;
 using BPrivate::BColorListView;
@@ -49,7 +52,8 @@ using BPrivate::BColorPreview;
 
 ColorsView::ColorsView(const char* name)
 	:
-	BView(name, B_WILL_DRAW)
+	BView(name, B_WILL_DRAW),
+	fColorTextControl(NULL)
 {
 	SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
 
@@ -71,6 +75,9 @@ ColorsView::ColorsView(const char* name)
 
 	fPicker = new BColorControl(B_ORIGIN, B_CELLS_32x8, 8.0,
 		"picker", new BMessage(UPDATE_COLOR));
+	fColorTextControl = new BTextControl("argb_color",
+		B_TRANSLATE("Color (AARRGGBB or RRGGBBAA rgba):"), "",
+		new BMessage(COLOR_TEXT_CHANGED));
 
 	BLayoutBuilder::Group<>(this, B_VERTICAL)
 		.Add(fAutoSelectCheckBox)
@@ -80,6 +87,7 @@ ColorsView::ColorsView(const char* name)
 			.AddGlue()
 			.Add(fPicker)
 			.End()
+		.Add(fColorTextControl)
 		.SetInsets(B_USE_WINDOW_SPACING);
 
 	fColorPreview->Parent()->SetExplicitMaxSize(BSize(B_SIZE_UNSET, fPicker->Bounds().Height()));
@@ -99,6 +107,7 @@ ColorsView::AttachedToWindow()
 	fPicker->SetTarget(this);
 	fAttrList->SetTarget(this);
 	fColorPreview->SetTarget(this);
+	fColorTextControl->SetTarget(this);
 
 	fAttrList->Select(0);
 	SetViewUIColor(B_PANEL_BACKGROUND_COLOR);
@@ -141,6 +150,7 @@ ColorsView::MessageReceived(BMessage* message)
 			// Received from the color fPicker when its color changes
 
 			rgb_color color = fPicker->ValueAsColor();
+			color.alpha = fCurrentColors.GetColor(ui_color_name(fWhich), color).alpha;
 			_SetCurrentColor(color);
 			Window()->PostMessage(kMsgUpdate);
 			break;
@@ -166,6 +176,16 @@ ColorsView::MessageReceived(BMessage* message)
 		case AUTO_ADJUST_CHANGED:
 		{
 			_CreateItems();
+			break;
+		}
+
+		case COLOR_TEXT_CHANGED:
+		{
+			rgb_color color;
+			if (_ParseColorText(fColorTextControl->Text(), color)) {
+				_SetCurrentColor(color);
+				Window()->PostMessage(kMsgUpdate);
+			}
 			break;
 		}
 
@@ -198,6 +218,7 @@ ColorsView::SetDefaults()
 	fPicker->SetValue(color);
 	fColorPreview->SetColor(color);
 	fColorPreview->Invalidate();
+	_SetColorText(color);
 
 	Window()->PostMessage(kMsgUpdate);
 }
@@ -213,6 +234,7 @@ ColorsView::Revert()
 	fPicker->SetValue(color);
 	fColorPreview->SetColor(color);
 	fColorPreview->Invalidate();
+	_SetColorText(color);
 
 	Window()->PostMessage(kMsgUpdate);
 }
@@ -292,6 +314,7 @@ ColorsView::_SetCurrentColor(rgb_color color)
 	_SetColor(fAttrList->CurrentSelection(), color);
 	fPicker->SetValue(color);
 	fColorPreview->SetColor(color);
+	_SetColorText(color);
 }
 
 
@@ -304,6 +327,52 @@ ColorsView::_SetColor(int32 index, rgb_color color)
 		fAttrList->InvalidateItem(index);
 		_SetColor(item->ColorWhich(), color);
 	}
+}
+
+
+void
+ColorsView::_SetColorText(const rgb_color& color)
+{
+	BString text;
+	text.SetToFormat("%02X%02X%02X%02X", color.alpha, color.red,
+		color.green, color.blue);
+	fColorTextControl->SetText(text.String());
+}
+
+
+bool
+ColorsView::_ParseColorText(const BString& source, rgb_color& color) const
+{
+	BString text(source);
+	text.Trim();
+	if (text.IsEmpty())
+		return false;
+
+	if (text[0] == '#')
+		text.Remove(0, 1);
+
+	if (text.Length() != 8)
+		return false;
+
+	char* end = NULL;
+	unsigned long raw = strtoul(text.String(), &end, 16);
+	if (end == text.String() || *end != '\0')
+		return false;
+
+	if (strstr(source.String(), "rgba") != NULL
+		|| strstr(source.String(), "RGBA") != NULL) {
+		color.red = (raw >> 24) & 0xff;
+		color.green = (raw >> 16) & 0xff;
+		color.blue = (raw >> 8) & 0xff;
+		color.alpha = raw & 0xff;
+	} else {
+		color.alpha = (raw >> 24) & 0xff;
+		color.red = (raw >> 16) & 0xff;
+		color.green = (raw >> 8) & 0xff;
+		color.blue = raw & 0xff;
+	}
+
+	return true;
 }
 
 

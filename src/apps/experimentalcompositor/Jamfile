@@ -1,0 +1,6 @@
+SubDir HAIKU_TOP src apps experimentalcompositor ;
+
+Application ExperimentalCompositor :
+	ExperimentalCompositorApp.cpp
+	: be experimentalcompositor [ TargetLibsupc++ ]
+;

@@ -6,13 +6,11 @@
 #define PRESENT_QUEUE_H
 
 #include <AutoDeleter.h>
-#include <Autolock.h>
 #include <Locker.h>
 #include <Region.h>
 
-#include "MallocBuffer.h"
-
 class HWInterface;
+class MallocBuffer;
 class RenderingBuffer;
 
 // Thread-safe, small ring queue for compositor output buffers.
@@ -43,6 +41,7 @@ public:
 									bool vsync);
 			// Snapshot queue-pressure counters for logging/diagnostics.
 			PressureMetrics		GetPressureMetrics();
+			void				SetLogLevel(int32 logLevel);
 
 			int32				BufferCount() const { return fBufferCount; }
 
@@ -60,6 +59,7 @@ private:
 			int32				fRenderIndex;
 			int32				fReadyIndex;
 			int32				fBufferCount;
+			int32				fLogLevel;
 			BRegion				fPendingDirty;
 			int64				fAcquireReuseCount;
 			int64				fReadyOverwriteCount;

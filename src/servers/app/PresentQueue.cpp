@@ -21,6 +21,7 @@ PresentQueue::PresentQueue(int32 width, int32 height, color_space format)
 	fAcquireReuseCount(0),
 	fReadyOverwriteCount(0),
 	fUnknownSubmitCount(0),
+	fLogLevel(0),
 	fLock("present queue lock")
 {
 	_AllocateBuffers(width, height, format);
@@ -61,8 +62,8 @@ PresentQueue::AcquireForRender()
 	if (chosenIndex < 0) {
 		// All buffers are ready; latest wins, so reuse the render index.
 		chosenIndex = fRenderIndex;
-		fAcquireReuseCount++;
-		debug_printf("present queue: all buffers busy, reusing buffer\n");
+		if (fLogLevel >= 2)
+			debug_printf("present queue: all buffers busy, reusing buffer\n");
 	}
 
 	fRenderIndex = chosenIndex;
@@ -98,7 +99,7 @@ PresentQueue::Submit(RenderingBuffer* buffer, const BRegion& dirty)
 
 	int32 pendingBefore = fPendingDirty.CountRects();
 	fPendingDirty.Include(&dirty);
-	if (fPendingDirty.CountRects() < pendingBefore) {
+	if (fPendingDirty.CountRects() < pendingBefore && fLogLevel >= 2) {
 		debug_printf("present queue: pending dirty shrank unexpectedly "
 			"(before=%" B_PRId32 " after=%" B_PRId32 ")\n",
 			pendingBefore, fPendingDirty.CountRects());
@@ -147,17 +148,22 @@ PresentQueue::PresentNext(HWInterface& interface, bool vsync)
 		fReadyIndex = -1;
 	}
 
-	if (dirty.CountRects() == 0) {
-		// No visible damage to present; skip retrace/present work.
+	if (dirty.CountRects() == 0 && fLogLevel >= 2)
 		debug_printf("present queue: presenting with empty dirty region\n");
-		return 0;
-	}
 
 	bigtime_t start = system_time();
 	if (vsync)
 		interface.WaitForRetrace(0);
 	interface.PresentBuffer(buffer, dirty);
 	return system_time() - start;
+}
+
+
+void
+PresentQueue::SetLogLevel(int32 logLevel)
+{
+	BAutolock _(fLock);
+	fLogLevel = logLevel;
 }
 
 

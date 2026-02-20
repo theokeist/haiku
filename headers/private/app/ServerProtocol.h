@@ -373,8 +373,13 @@ enum {
 	// These are intentionally in the shared protocol header so CLI/UI senders
 	// and app_server receivers stay in sync.
 	AS_INTERNAL_SET_ALPHA_DEBUG = 'aDbg',
+	// experimental/private
+	AS_PRIVATE_SET_WINDOW_EFFECTS = 'xWef',
+
+	// internal debug
 	AS_INTERNAL_SET_WINDOW_ALPHA = 'wAlp',
 	AS_INTERNAL_SET_COMPOSITOR_DEBUG_OPTIONS = 'cDbg',
+	AS_INTERNAL_RELOAD_COMPOSITOR_SETTINGS = 'cRld',
 
 	AS_LAST_CODE
 };

@@ -37,6 +37,9 @@
 #include <Path.h>
 #include <Region.h>
 #include <Roster.h>
+#include <String.h>
+
+#include <vector>
 
 #include <vector>
 
@@ -95,6 +98,28 @@ square_distance(const BPoint& a, const BPoint& b)
 
 
 static bool
+title_matches_blur_policy_tokens(const char* title, const BString& tokens)
+{
+	if (title == NULL || title[0] == '\0' || tokens.IsEmpty())
+		return false;
+
+	BString lowerTitle(title);
+	lowerTitle.ToLower();
+
+	int32 start = 0;
+	while (start < tokens.Length()) {
+		int32 end = start;
+		while (end < tokens.Length() && tokens[end] != ',')
+			end++;
+
+		BString token;
+		tokens.CopyInto(token, start, end - start);
+		token.Trim();
+		token.ToLower();
+		if (!token.IsEmpty() && lowerTitle.FindFirst(token.String()) >= 0)
+			return true;
+
+		start = end + 1;
 title_contains_case_insensitive(const char* title, const char* needle)
 {
 	if (title == NULL || needle == NULL || *needle == '\0')
@@ -1800,7 +1825,7 @@ Desktop::AddWindow(Window *window)
 	if (!window->IsNormal())
 		fSubsetWindows.AddWindow(window);
 
-	window->SetAlphaDebugEnabled(fAlphaDebugEnabled);
+	window->SetAlphaDebugEnabled(fCompositorSettings.debug_controls);
 
 	if (window->IsNormal()) {
 		if (window->Workspaces() == B_CURRENT_WORKSPACE)
@@ -2054,18 +2079,22 @@ Desktop::SetWindowTitle(Window *window, const char* title)
 
 
 void
-Desktop::SetAlphaDebugEnabled(bool enabled)
+Desktop::ApplyCompositorSettings(const CompositorSettings& settings)
 {
-	if (fAlphaDebugEnabled == enabled)
-		return;
-
-	fAlphaDebugEnabled = enabled;
+	fCompositorSettings = settings;
 
 	if (!LockAllWindows())
 		return;
 
 	for (Window* window = AllWindows().FirstWindow(); window != NULL;
 			window = window->NextWindow(kAllWindowList)) {
+		window->SetAlphaDebugEnabled(settings.debug_controls);
+	}
+
+	UnlockAllWindows();
+
+	if (HWInterface() != NULL)
+		HWInterface()->ApplyCompositorSettings(settings);
 		window->SetAlphaDebugEnabled(enabled);
 	}
 
@@ -2084,7 +2113,7 @@ Desktop::SetCompositorDebugOptions(const CompositorDebugOptions& options)
 bool
 Desktop::HandleAlphaDebugWheel(const BMessage& message)
 {
-	if (!fAlphaDebugEnabled)
+	if (!fCompositorSettings.debug_controls)
 		return false;
 
 	int32 modifiers = message.FindInt32("modifiers");
@@ -3658,23 +3687,32 @@ void
 Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 {
 	// Update compositor snapshot state for this redraw pass.
-	if (HWInterface() != NULL) {
+	if (HWInterface() != NULL && fCompositorSettings.enable_compositor) {
 		std::vector<WindowSnapshot> snapshots;
+		bigtime_t now = system_time();
 		for (Window* window = CurrentWindows().FirstWindow(); window != NULL;
 				window = window->NextWindow(fCurrentWorkspace)) {
 			if (window->IsHidden())
 				continue;
 
-			if (window->VisibleRegion().CountRects() == 0)
+			if (!dirtyRegion.Intersects(window->VisibleRegion().Frame()))
 				continue;
 
-			WindowSnapshot snapshot
-				= resolve_effect_state(window, fCompositorDebugOptions);
+			WindowSnapshot snapshot;
+			snapshot.visible = window->VisibleRegion();
+			CompositorEffectState effect = _ResolveEffectState(window, now);
+			snapshot.alpha = effect.alpha;
+			snapshot.opaqueFastPath = effect.opaqueFastPath;
+			snapshot.animActive = effect.animActive;
+			snapshot.window = window;
+			snapshot.blurEnabled = effect.blurEnabled;
+			snapshot.blurRadius = effect.blurRadius;
+			snapshot.blurRect = effect.blurRect;
 			snapshots.push_back(snapshot);
 		}
 
 		HWInterface()->UpdateCompositorState(snapshots,
-			fWorkspaces[fCurrentWorkspace].Color(), fCompositorDebugOptions);
+			fWorkspaces[fCurrentWorkspace].Color());
 	}
 
 	// send redraw messages to all windows intersecting the dirty region
@@ -3684,6 +3722,77 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 			&& dirtyRegion.Intersects(window->VisibleRegion().Frame()))
 			window->ProcessDirtyRegion(dirtyRegion, exposeRegion);
 	}
+}
+
+
+Desktop::CompositorEffectState
+Desktop::_ResolveEffectState(Window* window, bigtime_t now) const
+{
+	CompositorEffectState state = {};
+	bool allowNormalEffects = fCompositorSettings.enable_translucency;
+	bool allowEffects = !window->IsNormal() || allowNormalEffects;
+	bool allowAnimations = fCompositorSettings.enable_animations
+		&& allowEffects;
+	bool allowBlur = fCompositorSettings.enable_blur
+		&& (!window->IsNormal() || allowNormalEffects);
+
+	state.alpha = allowEffects
+		? (allowAnimations ? window->AnimatedAlpha(now) : window->Alpha())
+		: 1.0f;
+	state.animActive = allowAnimations && window->IsAlphaAnimating();
+	state.blurEnabled = allowBlur && window->BlurEnabled();
+	state.blurRadius = window->BlurRadius();
+	state.blurRect = state.blurEnabled ? window->BlurRegion() : BRect();
+
+	bool policyBlur = false;
+	const char* title = window->Title();
+	if (fCompositorSettings.enable_title_blur_policy) {
+		policyBlur = title_matches_blur_policy_tokens(title,
+			fCompositorSettings.blur_policy_tokens);
+	}
+	if (!policyBlur && fCompositorSettings.enable_floating_untitled_blur_policy
+		&& window->IsFloating()
+		&& (title == NULL || title[0] == '\0')) {
+		policyBlur = true;
+	}
+
+	if (allowBlur && policyBlur) {
+		state.blurEnabled = true;
+		if (state.blurRadius <= 0.0f)
+			state.blurRadius = 6.0f;
+		if (!state.blurRect.IsValid())
+			state.blurRect = BRect(window->Frame().left, window->Frame().top,
+				window->Frame().right, window->Frame().top + 20.0f);
+	}
+
+	if (fCompositorSettings.force_blur_all
+		&& window->Feel() != kDesktopWindowFeel) {
+		state.blurEnabled = true;
+		if (state.blurEnabled) {
+			if (state.blurRadius <= 0.0f)
+				state.blurRadius = 6.0f;
+			if (!state.blurRect.IsValid())
+				state.blurRect = BRect(window->Frame().left, window->Frame().top,
+					window->Frame().right, window->Frame().top + 20.0f);
+		}
+	}
+
+	if (state.blurEnabled && state.alpha >= 1.0f)
+		state.alpha = 0.85f;
+
+	if (fCompositorSettings.force_opacity >= 0.0f
+		&& window->Feel() != kDesktopWindowFeel) {
+		if (!fCompositorSettings.force_opacity_only_opaque || state.alpha >= 1.0f)
+			state.alpha = fCompositorSettings.force_opacity;
+	}
+
+	state.opaqueFastPath = state.alpha >= 1.0f
+		&& (!state.blurEnabled || state.blurRadius <= 0.0f);
+
+	if (!state.blurEnabled)
+		state.blurRect = BRect();
+
+	return state;
 }
 
 

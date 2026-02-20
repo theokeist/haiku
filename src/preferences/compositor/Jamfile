@@ -1,0 +1,17 @@
+SubDir HAIKU_TOP src preferences compositor ;
+
+UsePrivateHeaders app shared interface ;
+
+Application Compositor :
+	Compositor.cpp
+	CompositorWindow.cpp
+	:	be [ TargetLibstdc++ ] localestub
+	:	Compositor.rdef
+;
+
+DoCatalogs Compositor :
+	x-vnd.Haiku-Compositor
+	:
+	Compositor.cpp
+	CompositorWindow.cpp
+;

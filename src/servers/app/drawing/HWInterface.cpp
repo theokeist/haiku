@@ -19,6 +19,7 @@
 
 #include <vesa/vesa_info.h>
 
+#include "CompositorSettings.h"
 #include "Compositor.h"
 #include "drawing_support.h"
 
@@ -26,6 +27,7 @@
 #include "PresentQueue.h"
 #include "RenderingBuffer.h"
 #include "SystemPalette.h"
+#include "Window.h"
 
 
 using std::nothrow;
@@ -94,6 +96,23 @@ HWInterface::HWInterface()
 	fCursorLocation(0, 0),
 	fTrackingRect(),
 	fVGADevice(-1),
+	fListeners(20),
+	fCompositorBackground((rgb_color){0, 0, 0, 255}),
+	fCompositorFrameCounter(0),
+	fCompositorLogEveryN(0),
+	fCompositorComposeAccum(0),
+	fCompositorComposeCount(0),
+	fCompositorAnimActive(false),
+	fCompositorEnabled(true),
+	fCompositorAnimationsEnabled(true),
+	fCompositorBlurEnabled(false),
+	fCompositorTranslucencyEnabled(false),
+	fCompositorShowOverlay(false),
+	fCompositorLogTimings(false),
+	fCompositorStressInvalidate(false),
+	fCompositorTargetFps(60),
+	fCompositorLogLevel(0),
+	fCompositorSettingsLock("compositor settings lock"),
 	fPresentQueue(NULL),
 	fCompositor(NULL),
 	fWindowSnapshots(),
@@ -108,8 +127,7 @@ HWInterface::HWInterface()
 	fPresentThreadRunning(0),
 	fPendingInvalidations(0),
 	fPresentCounter(0),
-	fPresentLogTime(0),
-	fListeners(20)
+	fPresentLogTime(0)
 {
 }
 
@@ -348,12 +366,20 @@ HWInterface::DrawingBuffer() const
 status_t
 HWInterface::InvalidateRegion(const BRegion& region)
 {
-	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
+	bool compositorEnabled = false;
+	int32 logLevel = 0;
+	{
+		BAutolock _(fCompositorSettingsLock);
+		compositorEnabled = fCompositorEnabled;
+		logLevel = fCompositorLogLevel;
+	}
+	if (compositorEnabled && fCompositor.IsSet() && fPresentQueue.IsSet()) {
 		{
 			BAutolock _(fPresentInvalidateLock);
 			int32 pendingBefore = fPendingInvalidate.CountRects();
 			fPendingInvalidate.Include(&region);
-			if (fPendingInvalidate.CountRects() < pendingBefore) {
+			if (fPendingInvalidate.CountRects() < pendingBefore
+				&& logLevel >= 2) {
 				debug_printf("compositor: pending invalidate shrank unexpectedly "
 					"(before=%" B_PRId32 " after=%" B_PRId32 ")\n",
 					pendingBefore, fPendingInvalidate.CountRects());
@@ -373,6 +399,7 @@ HWInterface::InvalidateRegion(const BRegion& region)
 
 		BRegion clipped(region);
 		IntRect bufferClip(backBuffer->Bounds());
+		clipped.IntersectWith((BRect)bufferClip);
 		BRegion clipRegion;
 		clipRegion.Set((BRect)bufferClip);
 		clipped.IntersectWith(&clipRegion);
@@ -429,7 +456,12 @@ HWInterface::Invalidate(const BRect& frame)
 status_t
 HWInterface::CopyBackToFront(const BRect& frame)
 {
-	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
+	bool compositorEnabled = false;
+	{
+		BAutolock _(fCompositorSettingsLock);
+		compositorEnabled = fCompositorEnabled;
+	}
+	if (compositorEnabled && fCompositor.IsSet() && fPresentQueue.IsSet()) {
 		BRegion region(frame);
 		return InvalidateRegion(region);
 	}
@@ -497,15 +529,63 @@ HWInterface::ConfigureCompositor(int32 width, int32 height,
 		fPresentQueue.SetTo(new(std::nothrow) PresentQueue(width, height, format));
 	else
 		fPresentQueue->Resize(width, height, format);
+	{
+		BAutolock _(fCompositorSettingsLock);
+		if (fCompositor.IsSet())
+			fCompositor->SetDebugOptions(fCompositorShowOverlay,
+				fCompositorLogTimings, fCompositorStressInvalidate);
+		if (fCompositor.IsSet())
+			fCompositor->SetLogLevel(fCompositorLogLevel);
+		if (fPresentQueue.IsSet())
+			fPresentQueue->SetLogLevel(fCompositorLogLevel);
+	}
 	_StartPresentThread();
 }
 
 
 void
-HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
-	const rgb_color& background, const CompositorDebugOptions& options)
+HWInterface::ApplyCompositorSettings(const CompositorSettings& settings)
 {
-	BAutolock _(fPresentInvalidateLock);
+	int32 logLevel = settings.log_level;
+	int64 logEveryN = 0;
+	if (logLevel == 1)
+		logEveryN = 120;
+	else if (logLevel >= 2)
+		logEveryN = 60;
+
+	{
+		BAutolock _(fCompositorSettingsLock);
+		fCompositorEnabled = settings.enable_compositor;
+		fCompositorAnimationsEnabled = settings.enable_animations;
+		fCompositorBlurEnabled = settings.enable_blur;
+		fCompositorTranslucencyEnabled = settings.enable_translucency;
+		fCompositorShowOverlay = settings.show_overlay;
+		fCompositorLogTimings = settings.log_timings;
+		fCompositorStressInvalidate = settings.stress_invalidate;
+		fCompositorTargetFps = settings.target_fps > 0 ? settings.target_fps : 60;
+		fCompositorLogLevel = logLevel;
+		fCompositorLogEveryN = logEveryN;
+		fCompositorFrameCounter = 0;
+		fCompositorComposeAccum = 0;
+		fCompositorComposeCount = 0;
+		if (!fCompositorAnimationsEnabled || !fCompositorEnabled)
+			fCompositorAnimActive = false;
+	}
+
+	if (fCompositor.IsSet())
+		fCompositor->SetDebugOptions(fCompositorShowOverlay,
+			fCompositorLogTimings, fCompositorStressInvalidate);
+	if (fCompositor.IsSet())
+		fCompositor->SetLogLevel(logLevel);
+	if (fPresentQueue.IsSet())
+		fPresentQueue->SetLogLevel(logLevel);
+}
+
+
+void
+HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
+	const rgb_color& background)
+{
 	fWindowSnapshots = snapshots;
 	fCompositorBackground = background;
 	fCompositorDebugOptions = options;
@@ -526,6 +606,11 @@ HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 void
 HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
 {
+	if (buffer == NULL || FrontBuffer() == NULL)
+		return;
+
+	BRegion region(dirty);
+	region.IntersectWith((BRect)buffer->Bounds());
 	RenderingBuffer* front = FrontBuffer();
 	if (buffer == NULL || front == NULL)
 		return;
@@ -622,22 +707,83 @@ void
 HWInterface::_ProcessPendingInvalidate()
 {
 	BRegion pending;
-	std::vector<WindowSnapshot> snapshots;
-	rgb_color background;
-	CompositorDebugOptions options;
 	{
 		BAutolock _(fPresentInvalidateLock);
-		if (fPendingInvalidate.CountRects() == 0)
-			return;
-		pending = fPendingInvalidate;
-		fPendingInvalidate.MakeEmpty();
-		snapshots = fWindowSnapshots;
-		background = fCompositorBackground;
-		options = fCompositorDebugOptions;
+		if (fPendingInvalidate.CountRects() > 0) {
+			pending = fPendingInvalidate;
+			fPendingInvalidate.MakeEmpty();
+		}
 	}
 
-	if (!fPresentQueue.IsSet() || !fCompositor.IsSet())
+	bool compositorEnabled = false;
+	bool animationsEnabled = false;
+	bool translucencyEnabled = false;
+	bool showOverlay = false;
+	bool logTimings = false;
+	bool stressInvalidate = false;
+	int32 logLevel = 0;
+	int64 logEveryN = 0;
+	{
+		BAutolock _(fCompositorSettingsLock);
+		compositorEnabled = fCompositorEnabled;
+		animationsEnabled = fCompositorAnimationsEnabled;
+		translucencyEnabled = fCompositorTranslucencyEnabled;
+		showOverlay = fCompositorShowOverlay;
+		logTimings = fCompositorLogTimings;
+		stressInvalidate = fCompositorStressInvalidate;
+		logLevel = fCompositorLogLevel;
+		logEveryN = fCompositorLogEveryN;
+	}
+
+	if (!compositorEnabled || !fPresentQueue.IsSet() || !fCompositor.IsSet())
 		return;
+
+	bigtime_t now = system_time();
+	bool anyAnimActive = false;
+	int32 animatingWindows = 0;
+	for (size_t i = 0; i < fWindowSnapshots.size(); i++) {
+		WindowSnapshot& snapshot = fWindowSnapshots[i];
+		if (snapshot.window == NULL)
+			continue;
+
+		bool allowNormalEffects = translucencyEnabled;
+		bool allowEffects = !snapshot.window->IsNormal() || allowNormalEffects;
+		bool allowAnimations = animationsEnabled && allowEffects;
+		if (allowAnimations && snapshot.window->IsAlphaAnimating()) {
+			snapshot.alpha = snapshot.window->AnimatedAlpha(now);
+			snapshot.animActive = true;
+		} else
+			snapshot.animActive = false;
+
+		snapshot.opaqueFastPath = snapshot.alpha >= 1.0f
+			&& (!snapshot.blurEnabled || snapshot.blurRadius <= 0.0f);
+
+		if (snapshot.animActive) {
+			anyAnimActive = true;
+			animatingWindows++;
+		}
+	}
+
+	if (pending.CountRects() > 0) {
+		for (size_t i = 0; i < fWindowSnapshots.size(); i++) {
+			const WindowSnapshot& snapshot = fWindowSnapshots[i];
+			if (snapshot.alpha < 1.0f || snapshot.blurEnabled)
+				pending.Include(&snapshot.visible);
+		}
+	}
+
+	if (pending.CountRects() == 0 && !anyAnimActive)
+		return;
+
+	if (pending.CountRects() == 0 && anyAnimActive) {
+		for (size_t i = 0; i < fWindowSnapshots.size(); i++) {
+			const WindowSnapshot& snapshot = fWindowSnapshots[i];
+			if (snapshot.animActive)
+				pending.Include(&snapshot.visible);
+		}
+		if (pending.CountRects() == 0)
+			return;
+	}
 
 	if (!LockExclusiveAccess())
 		return;
@@ -681,6 +827,9 @@ HWInterface::_ProcessPendingInvalidate()
 			stats.blurTime += passStats.blurTime;
 			stats.composeTime += passStats.composeTime;
 		}
+	if (showOverlay && stats.overlayRects.CountRects() > 0)
+		pending.Include(&stats.overlayRects);
+		pending, snapshots, background, options);
 
 		fPresentQueue->Submit(target, replayRegions[i]);
 		presentTime += fPresentQueue->PresentNext(*this, true);
@@ -690,10 +839,31 @@ HWInterface::_ProcessPendingInvalidate()
 
 	int32 invalidations = atomic_get(&fPendingInvalidations);
 	atomic_set(&fPendingInvalidations, 0);
+	int32 pendingDirtyRects = 0;
+	{
+		BAutolock _(fPresentInvalidateLock);
+		pendingDirtyRects = fPendingInvalidate.CountRects();
+	}
 
 	fCompositorFrameCounter++;
-	if (options.logTimings && fCompositorLogEveryN > 0
-		&& (fCompositorFrameCounter % fCompositorLogEveryN) == 0) {
+	fCompositorComposeAccum += stats.composeTime;
+	fCompositorComposeCount++;
+	bool shouldLog = false;
+	if (logEveryN > 0 && logLevel >= 1
+		&& (fCompositorFrameCounter % logEveryN) == 0) {
+		shouldLog = true;
+	}
+	if (logTimings && (fCompositorFrameCounter % 30) == 0)
+		shouldLog = true;
+	if (showOverlay && logLevel >= 1 && (fCompositorFrameCounter % 30) == 0)
+		shouldLog = true;
+	if (stressInvalidate && (fCompositorFrameCounter % 60) == 0)
+		shouldLog = true;
+
+	if (shouldLog) {
+		int64 avgCompose = fCompositorComposeCount > 0
+			? fCompositorComposeAccum / fCompositorComposeCount
+			: 0;
 		debug_printf("compositor: frame %" B_PRId64
 			" invalidations=%" B_PRId32 " dirtyRects=%" B_PRId32
 			" dirtyPixels=%" B_PRId64 " windows=%" B_PRId32
@@ -713,22 +883,41 @@ HWInterface::_ProcessPendingInvalidate()
 			stats.cacheHits, stats.cacheMisses,
 			pressure.acquireReuseCount, pressure.readyOverwriteCount,
 			pressure.unknownSubmitCount,
-			stats.composeTime, presentTime);
+			stats.composeTime, presentTime,
+			" alpha=%" B_PRId32 " animating=%" B_PRId32
+			" blurred=%" B_PRId32 " blurPixels=%" B_PRId64
+			" blurHits=%" B_PRId32 " blurMisses=%" B_PRId32
+			" blurTime=%" B_PRId64 "us compose=%" B_PRId64
+			"us avgCompose=%" B_PRId64 "us present=%" B_PRId64
+			"us pendingRects=%" B_PRId32 " pendingDirty=%" B_PRId32
+			" buffering=%s vsync=%s\n",
+			fCompositorFrameCounter, invalidations, stats.dirtyRects,
+			stats.dirtyPixels, stats.windowsComposed, stats.alphaWindows,
+			animatingWindows, stats.blurredWindows, stats.blurredPixels,
+			stats.blurCacheHits, stats.blurCacheMisses, stats.blurTime,
+			stats.composeTime, avgCompose, presentTime,
+			pending.CountRects(), pendingDirtyRects,
+			fPresentQueue.IsSet() ? "intermediate" : "frontbuffer",
+			"runtime");
+		fCompositorComposeAccum = 0;
+		fCompositorComposeCount = 0;
 	}
 
 	fPresentCounter++;
 	bigtime_t now = system_time();
 	if (fPresentLogTime == 0)
 		fPresentLogTime = now;
-	if (options.logTimings && now - fPresentLogTime >= 1000000) {
+	if (logLevel >= 2 && now - fPresentLogTime >= 1000000) {
 		debug_printf("compositor: presents per second %" B_PRId64 "\n",
 			fPresentCounter);
 		fPresentCounter = 0;
 		fPresentLogTime = now;
-	} else if (!options.logTimings) {
-		fPresentCounter = 0;
-		fPresentLogTime = now;
 	}
+
+	if (anyAnimActive)
+		_SchedulePresent();
+
+	fCompositorAnimActive = anyAnimActive;
 }
 
 
@@ -744,7 +933,6 @@ HWInterface::_PresentThreadEntry(void* data)
 		}
 
 		while (atomic_get(&interface->fPresentThreadRunning) != 0) {
-			snooze(2000);
 			interface->_ProcessPendingInvalidate();
 
 			// Mark scheduling slot as free. If new work arrived while composing,
@@ -757,6 +945,28 @@ HWInterface::_PresentThreadEntry(void* data)
 			// state so producers won't skip the semaphore release.
 			if (atomic_test_and_set(&interface->fPresentScheduled, 1, 0) != 0)
 				break;
+			bool animationsEnabled = false;
+			int32 targetFps = 60;
+			{
+				BAutolock _(interface->fCompositorSettingsLock);
+				animationsEnabled = interface->fCompositorAnimationsEnabled;
+				targetFps = interface->fCompositorTargetFps;
+			}
+			if (targetFps <= 0)
+				targetFps = 60;
+			bigtime_t animDelay = 1000000 / targetFps;
+			bigtime_t delay = (animationsEnabled
+				&& interface->fCompositorAnimActive) ? animDelay : 2000;
+			snooze(delay);
+			if (!interface->_HasPendingInvalidate()
+				&& !interface->fCompositorAnimActive) {
+				BAutolock _(interface->fPresentInvalidateLock);
+				if (interface->fPendingInvalidate.CountRects() == 0
+					&& !interface->fCompositorAnimActive) {
+					atomic_set(&interface->fPresentScheduled, 0);
+					break;
+				}
+			}
 		}
 	}
 	return B_OK;

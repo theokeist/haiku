@@ -21,6 +21,7 @@
 #include <MessageRunner.h>
 
 #include "MessageLooper.h"
+#include "CompositorSettings.h"
 #include "CompositorDebugOptions.h"
 #include "ServerConfig.h"
 
@@ -54,7 +55,9 @@ private:
 									const char* targetScreen);
 
 			void				_LaunchInputServer();
-			// Pull alpha-debug settings from disk and apply if changed.
+			void				_LoadCompositorSettings();
+			void				_ApplyCompositorSettings();
+			void				_InvalidateAllDesktops();
 			void				_UpdateAlphaDebugSetting(bool force);
 			status_t			_AlphaDebugSettingsPath(BPath& path) const;
 			// Broadcast global alpha-debug state to all desktops.
@@ -69,6 +72,7 @@ private:
 private:
 			BObjectList<Desktop> fDesktops;
 			BLocker				fDesktopLock;
+			CompositorSettings	fCompositorSettings;
 			BMessageRunner*		fAlphaDebugRunner;
 			BMessageRunner*		fCompositorDebugRunner;
 			bool				fAlphaDebugEnabled;
