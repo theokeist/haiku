@@ -699,12 +699,19 @@ HWInterface::_PresentThreadEntry(void* data)
 		}
 
 		while (atomic_get_compat(&interface->fPresentThreadRunning) != 0) {
-			snooze(2000);
 			interface->_ProcessPendingInvalidate();
-			if (!interface->_HasPendingInvalidate()) {
-				atomic_set_compat(&interface->fPresentScheduled, 0);
-				if (!interface->_HasPendingInvalidate())
-					break;
+
+			// Mark scheduling slot as free. If new work arrived while composing,
+			// re-arm before leaving the loop so producers don't miss a wakeup.
+			atomic_set_compat(&interface->fPresentScheduled, 0);
+			if (!interface->_HasPendingInvalidate())
+				break;
+
+			// New invalidations arrived while processing. Re-arm the scheduled
+			// state so producers won't skip the semaphore release.
+			if (atomic_test_and_set_compat(&interface->fPresentScheduled, 1, 0)
+				!= 0) {
+				break;
 			}
 		}
 	}
