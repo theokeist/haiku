@@ -24,6 +24,7 @@
 #include "drawing_support.h"
 
 #include "DrawingEngine.h"
+#include "MallocBuffer.h"
 #include "PresentQueue.h"
 #include "RenderingBuffer.h"
 #include "SystemPalette.h"
@@ -126,10 +127,12 @@ HWInterface::HWInterface()
 	fCursorLocation(0, 0),
 	fTrackingRect(),
 	fVGADevice(-1),
-	fListeners(20),
+	fPresentQueue(NULL),
+	fCompositor(NULL),
+	fWindowSnapshots(),
 	fCompositorBackground((rgb_color){0, 0, 0, 255}),
 	fCompositorFrameCounter(0),
-	fCompositorLogEveryN(0),
+	fCompositorLogEveryN(120),
 	fCompositorComposeAccum(0),
 	fCompositorComposeCount(0),
 	fCompositorAnimActive(false),
@@ -143,12 +146,6 @@ HWInterface::HWInterface()
 	fCompositorTargetFps(60),
 	fCompositorLogLevel(0),
 	fCompositorSettingsLock("compositor settings lock"),
-	fPresentQueue(NULL),
-	fCompositor(NULL),
-	fWindowSnapshots(),
-	fCompositorBackground((rgb_color){0, 0, 0, 255}),
-	fCompositorFrameCounter(0),
-	fCompositorLogEveryN(120),
 	fPendingInvalidate(),
 	fPresentInvalidateLock("present invalidate lock"),
 	fPresentThread(-1),
@@ -157,7 +154,8 @@ HWInterface::HWInterface()
 	fPresentThreadRunning(0),
 	fPendingInvalidations(0),
 	fPresentCounter(0),
-	fPresentLogTime(0)
+	fPresentLogTime(0),
+	fListeners(20)
 {
 }
 
@@ -415,7 +413,7 @@ HWInterface::InvalidateRegion(const BRegion& region)
 					pendingBefore, fPendingInvalidate.CountRects());
 			}
 		}
-		atomic_add_compat(&fPendingInvalidations, 1);
+		atomic_add((int32*)&fPendingInvalidations, 1);
 		_SchedulePresent();
 		return B_OK;
 	}
@@ -429,10 +427,8 @@ HWInterface::InvalidateRegion(const BRegion& region)
 
 		BRegion clipped(region);
 		IntRect bufferClip(backBuffer->Bounds());
-		clipped.IntersectWith((BRect)bufferClip);
-		BRegion clipRegion;
-		clipRegion.Set((BRect)bufferClip);
-		clipped.IntersectWith(&clipRegion);
+		BRegion bufferClipRegion((BRect)bufferClip);
+		clipped.IntersectWith(&bufferClipRegion);
 
 		if (clipped.CountRects() == 0)
 			return B_OK;
@@ -640,17 +636,13 @@ HWInterface::PresentBuffer(RenderingBuffer* buffer, const BRegion& dirty)
 		return;
 
 	BRegion region(dirty);
-	region.IntersectWith((BRect)buffer->Bounds());
+	BRegion bufferBounds((BRect)buffer->Bounds());
+	region.IntersectWith(&bufferBounds);
 	RenderingBuffer* front = FrontBuffer();
 	if (buffer == NULL || front == NULL)
 		return;
 
-	BRegion region(dirty);
-	BRegion clipRegion;
-	clipRegion.Set((BRect)buffer->Bounds());
-	region.IntersectWith(&clipRegion);
-	BRegion frontClip;
-	frontClip.Set((BRect)front->Bounds());
+	BRegion frontClip((BRect)front->Bounds());
 	region.IntersectWith(&frontClip);
 	if (region.CountRects() == 0)
 		return;
@@ -727,7 +719,7 @@ HWInterface::_SchedulePresent()
 	if (fPresentSemaphore < 0)
 		return;
 
-	if (atomic_test_and_set_compat(&fPresentScheduled, 1, 0) == 0)
+	if (atomic_test_and_set((int32*)&fPresentScheduled, 1, 0) == 0)
 		release_sem(fPresentSemaphore);
 }
 
@@ -752,6 +744,8 @@ HWInterface::_ProcessPendingInvalidate()
 	bool stressInvalidate = false;
 	int32 logLevel = 0;
 	int64 logEveryN = 0;
+	std::vector<WindowSnapshot> snapshots;
+	rgb_color background = {0,0,0,255};
 	{
 		BAutolock _(fCompositorSettingsLock);
 		compositorEnabled = fCompositorEnabled;
@@ -762,6 +756,9 @@ HWInterface::_ProcessPendingInvalidate()
 		stressInvalidate = fCompositorStressInvalidate;
 		logLevel = fCompositorLogLevel;
 		logEveryN = fCompositorLogEveryN;
+		// copy snapshot state under lock to avoid races with Desktop thread
+		snapshots = fWindowSnapshots;
+		background = fCompositorBackground;
 	}
 
 	if (!compositorEnabled || !fPresentQueue.IsSet() || !fCompositor.IsSet())
@@ -770,8 +767,8 @@ HWInterface::_ProcessPendingInvalidate()
 	bigtime_t now = system_time();
 	bool anyAnimActive = false;
 	int32 animatingWindows = 0;
-	for (size_t i = 0; i < fWindowSnapshots.size(); i++) {
-		WindowSnapshot& snapshot = fWindowSnapshots[i];
+	for (size_t i = 0; i < snapshots.size(); i++) {
+		WindowSnapshot& snapshot = snapshots[i];
 		if (snapshot.window == NULL)
 			continue;
 
@@ -794,8 +791,8 @@ HWInterface::_ProcessPendingInvalidate()
 	}
 
 	if (pending.CountRects() > 0) {
-		for (size_t i = 0; i < fWindowSnapshots.size(); i++) {
-			const WindowSnapshot& snapshot = fWindowSnapshots[i];
+		for (size_t i = 0; i < snapshots.size(); i++) {
+			const WindowSnapshot& snapshot = snapshots[i];
 			if (snapshot.alpha < 1.0f || snapshot.blurEnabled)
 				pending.Include(&snapshot.visible);
 		}
@@ -805,8 +802,8 @@ HWInterface::_ProcessPendingInvalidate()
 		return;
 
 	if (pending.CountRects() == 0 && anyAnimActive) {
-		for (size_t i = 0; i < fWindowSnapshots.size(); i++) {
-			const WindowSnapshot& snapshot = fWindowSnapshots[i];
+		for (size_t i = 0; i < snapshots.size(); i++) {
+			const WindowSnapshot& snapshot = snapshots[i];
 			if (snapshot.animActive)
 				pending.Include(&snapshot.visible);
 		}
@@ -824,41 +821,10 @@ HWInterface::_ProcessPendingInvalidate()
 		return;
 	}
 
-	std::vector<BRegion> replayRegions;
-	replayRegions.push_back(pending);
-	if (options.stressInvalidate)
-		_AppendStressReplayRegions(pending, source->Bounds(),
-			fCompositorFrameCounter, replayRegions);
-
-	ComposeStats stats = {};
-	bigtime_t presentTime = 0;
-	for (size_t i = 0; i < replayRegions.size(); i++) {
-		RenderingBuffer* target = i == 0
-			? renderTarget : fPresentQueue->AcquireForRender();
-		if (target == NULL)
-			break;
-
-		ComposeStats passStats = fCompositor->Compose(*target, *source,
-			replayRegions[i], snapshots, background, options);
-		if (i == 0)
-			stats = passStats;
-		else {
-			stats.dirtyRects += passStats.dirtyRects;
-			stats.dirtyPixels += passStats.dirtyPixels;
-			stats.windowsComposed += passStats.windowsComposed;
-			stats.copyPathWindows += passStats.copyPathWindows;
-			stats.blendPathWindows += passStats.blendPathWindows;
-			stats.alphaWindows += passStats.alphaWindows;
-			stats.blurredWindows += passStats.blurredWindows;
-			stats.blurredPixels += passStats.blurredPixels;
-			stats.cacheHits += passStats.cacheHits;
-			stats.cacheMisses += passStats.cacheMisses;
-			stats.blurTime += passStats.blurTime;
-			stats.composeTime += passStats.composeTime;
-		}
+	ComposeStats stats = fCompositor->Compose(*renderTarget, *source,
+		pending, snapshots, background);
 	if (showOverlay && stats.overlayRects.CountRects() > 0)
 		pending.Include(&stats.overlayRects);
-		pending, snapshots, background, options);
 
 		fPresentQueue->Submit(target, replayRegions[i]);
 		presentTime += fPresentQueue->PresentNext(*this, true);
@@ -866,8 +832,13 @@ HWInterface::_ProcessPendingInvalidate()
 	PresentQueue::PressureMetrics pressure = fPresentQueue->GetPressureMetrics();
 	UnlockExclusiveAccess();
 
-	int32 invalidations = atomic_get_compat(&fPendingInvalidations);
-	atomic_set_compat(&fPendingInvalidations, 0);
+	int32 invalidations = atomic_get((int32*)&fPendingInvalidations);
+	atomic_set((int32*)&fPendingInvalidations, 0);
+	int32 pendingDirtyRects = 0;
+	{
+		BAutolock _(fPresentInvalidateLock);
+		pendingDirtyRects = fPendingInvalidate.CountRects();
+	}
 
 	fCompositorFrameCounter++;
 	fCompositorComposeAccum += stats.composeTime;
@@ -928,7 +899,7 @@ HWInterface::_ProcessPendingInvalidate()
 	}
 
 	fPresentCounter++;
-	bigtime_t now = system_time();
+	now = system_time();
 	if (fPresentLogTime == 0)
 		fPresentLogTime = now;
 	if (logLevel >= 2 && now - fPresentLogTime >= 1000000) {
@@ -949,14 +920,14 @@ status_t
 HWInterface::_PresentThreadEntry(void* data)
 {
 	HWInterface* interface = static_cast<HWInterface*>(data);
-	while (atomic_get_compat(&interface->fPresentThreadRunning) != 0) {
+	while (atomic_get((int32*)&interface->fPresentThreadRunning) != 0) {
 		status_t status = acquire_sem(interface->fPresentSemaphore);
 		if (status != B_OK
-			|| atomic_get_compat(&interface->fPresentThreadRunning) == 0) {
+			|| atomic_get((int32*)&interface->fPresentThreadRunning) == 0) {
 			continue;
 		}
 
-		while (atomic_get_compat(&interface->fPresentThreadRunning) != 0) {
+		while (atomic_get((int32*)&interface->fPresentThreadRunning) != 0) {
 			interface->_ProcessPendingInvalidate();
 
 			// Mark scheduling slot as free. If new work arrived while composing,
@@ -993,7 +964,7 @@ HWInterface::_PresentThreadEntry(void* data)
 				BAutolock _(interface->fPresentInvalidateLock);
 				if (interface->fPendingInvalidate.CountRects() == 0
 					&& !interface->fCompositorAnimActive) {
-					atomic_set(&interface->fPresentScheduled, 0);
+					atomic_set((int32*)&interface->fPresentScheduled, 0);
 					break;
 				}
 			}
@@ -1162,7 +1133,7 @@ void
 HWInterface::_DrawCursor(IntRect area) const
 {
 	RenderingBuffer* backBuffer = DrawingBuffer();
-	if (!backBuffer || !area.IsValid())
+	if (!backBuffer || !area.IsValid() || !fCursorAndDragBitmap.IsSet())
 		return;
 
 	ServerCursorReference cursor;
@@ -1187,6 +1158,10 @@ HWInterface::_DrawCursor(IntRect area) const
 		int32 width = area.right - area.left + 1;
 		int32 height = area.bottom - area.top + 1;
 
+		// Sanity check dimensions
+		if (width <= 0 || height <= 0 || width > 4096 || height > 4096)
+			return;
+
 		// make a bitmap from the backbuffer
 		// that has the cursor blended on top of it
 
@@ -1196,14 +1171,15 @@ HWInterface::_DrawCursor(IntRect area) const
 		if (buffer == NULL)
 			return;
 
-		// offset into back buffer
-		uint8* src = (uint8*)backBuffer->Bits();
+		// Get pointers to source buffers (unoffset, we'll offset in the loop)
+		uint8* backSrc = (uint8*)backBuffer->Bits();
 		uint32 srcBPR = backBuffer->BytesPerRow();
-		src += area.top * srcBPR + area.left * 4;
 
 		// offset into cursor bitmap
-		uint8* crs = (uint8*)cursor->Bits();
-		uint32 crsBPR = cursor->BytesPerRow();
+		uint8* crs = (uint8*)fCursorAndDragBitmap->Bits();
+		if (crs == NULL)
+			return;
+		uint32 crsBPR = fCursorAndDragBitmap->BytesPerRow();
 		// since area is clipped to cf,
 		// the diff between area.top and cf.top is always positive,
 		// same for diff between area.left and cf.left
@@ -1223,61 +1199,72 @@ HWInterface::_DrawCursor(IntRect area) const
 			uint8* bup = fCursorAreaBackup->buffer;
 			uint32 bupBPR = fCursorAreaBackup->bpr;
 
-			// blending and backup of drawing buffer
-			for (int32 y = area.top; y <= area.bottom; y++) {
-				uint8* s = src;
-				uint8* c = crs;
-				uint8* d = dst;
-				uint8* b = bup;
+			// When backing up for software cursor, copy from the current
+			// front buffer (what is actually displayed) so restore is correct,
+			// and use those pixels as base for blending. Fall back to back
+			// buffer if front buffer unavailable.
+			RenderingBuffer* frontBuffer = FrontBuffer();
+			uint8* blendSrc = frontBuffer ? (uint8*)frontBuffer->Bits() : backSrc;
+			uint32 blendBPR = frontBuffer ? frontBuffer->BytesPerRow() : srcBPR;
 
-				for (int32 x = area.left; x <= area.right; x++) {
-					*(uint32*)b = *(uint32*)s;
-					// assumes backbuffer alpha = 255
-					// assuming pre-multiplied cursor bitmap
-					int a = 255 - c[3];
-					d[0] = ((int)(b[0] * a + 255) >> 8) + c[0];
-					d[1] = ((int)(b[1] * a + 255) >> 8) + c[1];
-					d[2] = ((int)(b[2] * a + 255) >> 8) + c[2];
+			// blending and backup of front buffer
+		for (int32 y = area.top; y <= area.bottom; y++) {
+			uint8* c = crs;
+			uint8* d = dst;
+			uint8* b = bup;
+			uint8* f = blendSrc + y * blendBPR + area.left * 4;
 
-					s += 4;
-					c += 4;
-					d += 4;
-					b += 4;
-				}
-				crs += crsBPR;
-				src += srcBPR;
-				dst += width * 4;
-				bup += bupBPR;
+			for (int32 x = area.left; x <= area.right; x++) {
+				// copy current blend source pixel into backup
+				*(uint32*)b = *(uint32*)f;
+				// assumes blend buffer alpha = 255
+				// assuming pre-multiplied cursor bitmap
+				int a = 255 - c[3];
+				d[0] = ((int)(f[0] * a + 255) >> 8) + c[0];
+				d[1] = ((int)(f[1] * a + 255) >> 8) + c[1];
+				d[2] = ((int)(f[2] * a + 255) >> 8) + c[2];
+
+				c += 4;
+				d += 4;
+				b += 4;
+				f += 4;
 			}
-			fFloatingOverlaysLock.Unlock();
-		} else {
-			// blending
-			for (int32 y = area.top; y <= area.bottom; y++) {
-				uint8* s = src;
-				uint8* c = crs;
-				uint8* d = dst;
-				for (int32 x = area.left; x <= area.right; x++) {
-					// assumes backbuffer alpha = 255
-					// assuming pre-multiplied cursor bitmap
-					uint8 a = 255 - c[3];
-					d[0] = ((s[0] * a + 255) >> 8) + c[0];
-					d[1] = ((s[1] * a + 255) >> 8) + c[1];
-					d[2] = ((s[2] * a + 255) >> 8) + c[2];
-
-					s += 4;
-					c += 4;
-					d += 4;
-				}
-				crs += crsBPR;
-				src += srcBPR;
-				dst += width * 4;
-			}
+			crs += crsBPR;
+			dst += width * 4;
+			bup += bupBPR;
 		}
-		// copy result to front buffer
-		_CopyToFront(buffer, width * 4, area.left, area.top, area.right,
-			area.bottom);
+		fFloatingOverlaysLock.Unlock();
+	} else {
+		// blending (no backup)
+		uint8* blendSrc = FrontBuffer() ? (uint8*)FrontBuffer()->Bits() : backSrc;
+		uint32 blendBPR = FrontBuffer() ? FrontBuffer()->BytesPerRow() : srcBPR;
 
-		delete[] buffer;
+		for (int32 y = area.top; y <= area.bottom; y++) {
+			uint8* c = crs;
+			uint8* d = dst;
+			uint8* f = blendSrc + y * blendBPR + area.left * 4;
+
+			for (int32 x = area.left; x <= area.right; x++) {
+				// assumes blendBuffer alpha = 255
+				// assuming pre-multiplied cursor bitmap
+				uint8 a = 255 - c[3];
+				d[0] = ((f[0] * a + 255) >> 8) + c[0];
+				d[1] = ((f[1] * a + 255) >> 8) + c[1];
+				d[2] = ((f[2] * a + 255) >> 8) + c[2];
+
+				c += 4;
+				d += 4;
+				f += 4;
+			}
+			crs += crsBPR;
+			dst += width * 4;
+		}
+	}
+	// copy result to front buffer
+	_CopyToFront(buffer, width * 4, area.left, area.top, area.right,
+		area.bottom);
+
+	delete[] buffer;
 	}
 }
 

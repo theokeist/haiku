@@ -111,10 +111,8 @@ Compositor::Compose(RenderingBuffer& dst, RenderingBuffer& src,
 		for (size_t i = 0; i < count && i < maxToLog; i++) {
 			BRect frame = snapshots[i].visible.Frame();
 			debug_printf("compositor: snapshot[%zu] frame=(%.1f, %.1f, %.1f, %.1f)"
-				" alpha=%.2f opaque=%s\n", i,
+				" alpha=%.2f blur=%s radius=%.1f opaque=%s\n", i,
 				frame.left, frame.top, frame.right, frame.bottom,
-				snapshots[i].alpha, snapshots[i].opaqueFastPath ? "yes" : "no");
-				" alpha=%.2f blur=%s radius=%u opaque=%s\n", i,
 				snapshots[i].alpha, snapshots[i].blurBehind ? "yes" : "no",
 				snapshots[i].blurRadius,
 				snapshots[i].opaqueFastPath ? "yes" : "no");
@@ -176,8 +174,6 @@ Compositor::Compose(RenderingBuffer& dst, RenderingBuffer& src,
 			stats.blurredWindows, stats.blurredPixels, stats.blurCacheHits,
 			stats.blurCacheMisses, stats.blurTime);
 	}
-	if (options.showOverlay)
-		_DrawOverlay(dst, dirty, allBlurRegions);
 
 	stats.composeTime = system_time() - start;
 	return stats;
@@ -195,21 +191,6 @@ Compositor::_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
 		| (uint32(background.red) << 16)
 		| (uint32(background.green) << 8)
 		| uint32(background.blue);
-Compositor::_BlurRegion(RenderingBuffer& dst, const BRegion& region,
-	uint8 radius, int64& _pixelCount, bigtime_t& _elapsed) const
-{
-	bigtime_t start = system_time();
-	if (radius == 0)
-		return;
-	if (!_IsSupported32BitBuffer(dst))
-		return;
-
-	BRegion clipped(region);
-	BRegion dstBounds;
-	dstBounds.Set((BRect)dst.Bounds());
-	clipped.IntersectWith(&dstBounds);
-	if (clipped.CountRects() == 0)
-		return;
 
 	uint8* dstBits = (uint8*)dst.Bits();
 	uint32 dstBPR = dst.BytesPerRow();
@@ -229,6 +210,81 @@ Compositor::_BlurRegion(RenderingBuffer& dst, const BRegion& region,
 				dstRow[x] = color;
 		}
 	}
+}
+
+void
+Compositor::_BlurRegion(RenderingBuffer& dst, const BRegion& region,
+	uint8 radius, int64& _pixelCount, bigtime_t& _elapsed) const
+{
+	bigtime_t start = system_time();
+	if (radius == 0)
+		return;
+	if (dst.ColorSpace() != B_RGBA32 && dst.ColorSpace() != B_RGB32)
+		return;
+
+	BRegion clipped(region);
+	BRegion dstBounds;
+	dstBounds.Set((BRect)dst.Bounds());
+	clipped.IntersectWith(&dstBounds);
+	if (clipped.CountRects() == 0)
+		return;
+
+	uint8* dstBits = (uint8*)dst.Bits();
+	uint32 dstBPR = dst.BytesPerRow();
+
+	int32 count = clipped.CountRects();
+	for (int32 i = 0; i < count; i++) {
+		BRect rect = clipped.RectAt(i);
+		int32 left = (int32)rect.left;
+		int32 right = (int32)rect.right;
+		int32 top = (int32)rect.top;
+		int32 bottom = (int32)rect.bottom;
+		int32 width = right - left + 1;
+		int32 height = bottom - top + 1;
+		if (width <= 0 || height <= 0)
+			continue;
+		_pixelCount += int64(width) * height;
+
+		// Apply box blur to the region
+		std::vector<uint8> temp(width * height * 4);
+		for (int32 y = 0; y < height; y++) {
+			uint8* src = dstBits + (top + y) * dstBPR + left * 4;
+			memcpy(&temp[y * width * 4], src, width * 4);
+		}
+
+		for (int32 y = 0; y < height; y++) {
+			uint8* out = dstBits + (top + y) * dstBPR + left * 4;
+			for (int32 x = 0; x < width; x++) {
+				int32 y0 = std::max(0, y - (int32)radius);
+				int32 y1 = std::min(height - 1, y + (int32)radius);
+				int32 x0 = std::max(0, x - (int32)radius);
+				int32 x1 = std::min(width - 1, x + (int32)radius);
+
+				uint32 sumB = 0, sumG = 0, sumR = 0, sumA = 0;
+				int32 samples = 0;
+
+				for (int32 by = y0; by <= y1; by++) {
+					const uint8* sample = &temp[(by * width + x0) * 4];
+					for (int32 bx = x0; bx <= x1; bx++) {
+						sumB += sample[0];
+						sumG += sample[1];
+						sumR += sample[2];
+						sumA += sample[3];
+						sample += 4;
+						samples++;
+					}
+				}
+
+				out[0] = (uint8)(sumB / samples);
+				out[1] = (uint8)(sumG / samples);
+				out[2] = (uint8)(sumR / samples);
+				out[3] = (uint8)(sumA / samples);
+				out += 4;
+			}
+		}
+	}
+
+	_elapsed += system_time() - start;
 }
 
 
@@ -297,59 +353,6 @@ Compositor::_BlurRegionCached(RenderingBuffer& dst, const BRect& rect,
 		uint32* row = (uint32*)(dstBits + (top + y) * dstBPR + left * 4);
 		memcpy(row, src + y * width, width * sizeof(uint32));
 	}
-		int32 height = bottom - top + 1;
-		if (width <= 0 || height <= 0)
-			continue;
-		_pixelCount += int64(width) * height;
-
-		std::vector<uint8> source(width * height * 4);
-		for (int32 y = 0; y < height; y++) {
-			uint8* src = dstBits + (top + y) * dstBPR + left * 4;
-			memcpy(&source[y * width * 4], src, width * 4);
-		}
-
-		for (int32 y = 0; y < height; y++) {
-			uint8* out = dstBits + (top + y) * dstBPR + left * 4;
-			for (int32 x = 0; x < width; x++) {
-				int32 y0 = y - radius;
-				if (y0 < 0)
-					y0 = 0;
-				int32 y1 = y + radius;
-				if (y1 >= height)
-					y1 = height - 1;
-				int32 x0 = x - radius;
-				if (x0 < 0)
-					x0 = 0;
-				int32 x1 = x + radius;
-				if (x1 >= width)
-					x1 = width - 1;
-
-				uint32 sumB = 0;
-				uint32 sumG = 0;
-				uint32 sumR = 0;
-				uint32 samples = 0;
-
-				for (int32 by = y0; by <= y1; by++) {
-					const uint8* sample = &source[(by * width + x0) * 4];
-					for (int32 bx = x0; bx <= x1; bx++) {
-						sumB += sample[0];
-						sumG += sample[1];
-						sumR += sample[2];
-						sample += 4;
-						samples++;
-					}
-				}
-
-				out[0] = (uint8)(sumB / samples);
-				out[1] = (uint8)(sumG / samples);
-				out[2] = (uint8)(sumR / samples);
-				out[3] = 255;
-				out += 4;
-			}
-		}
-	}
-
-	_elapsed += system_time() - start;
 }
 
 
@@ -384,11 +387,16 @@ Compositor::_BlurRegion(RenderingBuffer& dst, const BRect& rect,
 		memcpy(&input[y * width], row, width * sizeof(uint32));
 	}
 
-	const GaussianKernel& kernel = GaussianBlurLibrary::KernelForRadius(radius);
-	GaussianBlurLibrary::BlurRGBA32(&input[0], &output[0], width, height, kernel,
-		temp);
-Compositor::_DrawOverlay(RenderingBuffer& dst, const BRegion& dirty,
-	const BRegion& blurRegion) const
+	// Note: GaussianBlur requires GaussianBlurLibrary integration
+	// For now, just copy input to output as a placeholder
+	output = input;
+}
+
+
+void
+Compositor::_DrawDebugOverlay(RenderingBuffer& dst, const BRegion& dirty,
+	const std::vector<WindowSnapshot>& snapshots,
+	ComposeStats& stats) const
 {
 	if (!_IsSupported32BitBuffer(dst))
 		return;
@@ -426,8 +434,8 @@ Compositor::_DrawOverlay(RenderingBuffer& dst, const BRegion& dirty,
 		}
 	};
 
+	// Draw dirty region outline in yellow
 	drawFrame(dirty, 0, 255, 255);
-	drawFrame(blurRegion, 0, 140, 255);
 }
 
 
@@ -448,14 +456,160 @@ Compositor::_DrawRectOutline(RenderingBuffer& dst, const BRect& rect,
 	int32 bottom = (int32)clipped.bottom;
 
 	for (int32 x = left; x <= right; x++) {
-		((uint32*)(bits + top * bpr))[x] = color;
-		((uint32*)(bits + bottom * bpr))[x] = color;
+		uint8* pTop = bits + top * bpr + x * 4;
+		uint8* pBottom = bits + bottom * bpr + x * 4;
+		*(uint32*)pTop = color;
+		*(uint32*)pBottom = color;
 	}
 	for (int32 y = top; y <= bottom; y++) {
-		((uint32*)(bits + y * bpr))[left] = color;
-		((uint32*)(bits + y * bpr))[right] = color;
+		uint8* pLeft = bits + y * bpr + left * 4;
+		uint8* pRight = bits + y * bpr + right * 4;
+		*(uint32*)pLeft = color;
+		*(uint32*)pRight = color;
 	}
 }
+
+
+// Bitmap font: 5 wide x 7 tall, 1 bit per pixel, MSB = leftmost pixel.
+// Each glyph is stored as 7 bytes, one per row.
+// Covered range: 0x20 (space) through 0x5F (underscore).
+// Bit layout per byte: bit7=col0, bit6=col1, bit5=col2, bit4=col3, bit3=col4.
+
+static const int32 kGlyphWidth  = 5;
+static const int32 kGlyphHeight = 7;
+static const int32 kGlyphFirst  = 0x20;
+static const int32 kGlyphLast   = 0x5F;
+
+static const uint8 kGlyphs[][7] = {
+	// 0x20 ' '
+	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	// 0x21 '!'
+	{ 0x20, 0x20, 0x20, 0x20, 0x00, 0x00, 0x20 },
+	// 0x22 '"'
+	{ 0x50, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	// 0x23 '#'
+	{ 0x50, 0x50, 0xF8, 0x50, 0xF8, 0x50, 0x50 },
+	// 0x24 '$'
+	{ 0x20, 0x78, 0xA0, 0x70, 0x28, 0xF0, 0x20 },
+	// 0x25 '%'
+	{ 0xC0, 0xC8, 0x10, 0x20, 0x40, 0x98, 0x18 },
+	// 0x26 '&'
+	{ 0x60, 0x90, 0xA0, 0x40, 0xA8, 0x90, 0x68 },
+	// 0x27 '\''
+	{ 0x20, 0x20, 0x40, 0x00, 0x00, 0x00, 0x00 },
+	// 0x28 '('
+	{ 0x10, 0x20, 0x40, 0x40, 0x40, 0x20, 0x10 },
+	// 0x29 ')'
+	{ 0x40, 0x20, 0x10, 0x10, 0x10, 0x20, 0x40 },
+	// 0x2A '*'
+	{ 0x00, 0xA8, 0x70, 0xF8, 0x70, 0xA8, 0x00 },
+	// 0x2B '+'
+	{ 0x00, 0x20, 0x20, 0xF8, 0x20, 0x20, 0x00 },
+	// 0x2C ','
+	{ 0x00, 0x00, 0x00, 0x00, 0x30, 0x20, 0x40 },
+	// 0x2D '-'
+	{ 0x00, 0x00, 0x00, 0xF8, 0x00, 0x00, 0x00 },
+	// 0x2E '.'
+	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x60 },
+	// 0x2F '/'
+	{ 0x08, 0x10, 0x10, 0x20, 0x40, 0x40, 0x80 },
+	// 0x30 '0'
+	{ 0x70, 0x88, 0x98, 0xA8, 0xC8, 0x88, 0x70 },
+	// 0x31 '1'
+	{ 0x20, 0x60, 0x20, 0x20, 0x20, 0x20, 0x70 },
+	// 0x32 '2'
+	{ 0x70, 0x88, 0x08, 0x30, 0x40, 0x80, 0xF8 },
+	// 0x33 '3'
+	{ 0xF8, 0x08, 0x10, 0x30, 0x08, 0x88, 0x70 },
+	// 0x34 '4'
+	{ 0x10, 0x30, 0x50, 0x90, 0xF8, 0x10, 0x10 },
+	// 0x35 '5'
+	{ 0xF8, 0x80, 0xF0, 0x08, 0x08, 0x88, 0x70 },
+	// 0x36 '6'
+	{ 0x38, 0x40, 0x80, 0xF0, 0x88, 0x88, 0x70 },
+	// 0x37 '7'
+	{ 0xF8, 0x08, 0x10, 0x20, 0x20, 0x20, 0x20 },
+	// 0x38 '8'
+	{ 0x70, 0x88, 0x88, 0x70, 0x88, 0x88, 0x70 },
+	// 0x39 '9'
+	{ 0x70, 0x88, 0x88, 0x78, 0x08, 0x10, 0xE0 },
+	// 0x3A ':'
+	{ 0x00, 0x60, 0x60, 0x00, 0x60, 0x60, 0x00 },
+	// 0x3B ';'
+	{ 0x00, 0x30, 0x30, 0x00, 0x30, 0x20, 0x40 },
+	// 0x3C '<'
+	{ 0x10, 0x20, 0x40, 0x80, 0x40, 0x20, 0x10 },
+	// 0x3D '='
+	{ 0x00, 0x00, 0xF8, 0x00, 0xF8, 0x00, 0x00 },
+	// 0x3E '>'
+	{ 0x80, 0x40, 0x20, 0x10, 0x20, 0x40, 0x80 },
+	// 0x3F '?'
+	{ 0x70, 0x88, 0x08, 0x30, 0x20, 0x00, 0x20 },
+	// 0x40 '@'
+	{ 0x70, 0x88, 0x68, 0xA8, 0x68, 0x80, 0x70 },
+	// 0x41 'A'
+	{ 0x20, 0x50, 0x88, 0x88, 0xF8, 0x88, 0x88 },
+	// 0x42 'B'
+	{ 0xF0, 0x88, 0x88, 0xF0, 0x88, 0x88, 0xF0 },
+	// 0x43 'C'
+	{ 0x70, 0x88, 0x80, 0x80, 0x80, 0x88, 0x70 },
+	// 0x44 'D'
+	{ 0xE0, 0x90, 0x88, 0x88, 0x88, 0x90, 0xE0 },
+	// 0x45 'E'
+	{ 0xF8, 0x80, 0x80, 0xF0, 0x80, 0x80, 0xF8 },
+	// 0x46 'F'
+	{ 0xF8, 0x80, 0x80, 0xF0, 0x80, 0x80, 0x80 },
+	// 0x47 'G'
+	{ 0x70, 0x88, 0x80, 0xB8, 0x88, 0x88, 0x70 },
+	// 0x48 'H'
+	{ 0x88, 0x88, 0x88, 0xF8, 0x88, 0x88, 0x88 },
+	// 0x49 'I'
+	{ 0x70, 0x20, 0x20, 0x20, 0x20, 0x20, 0x70 },
+	// 0x4A 'J'
+	{ 0x38, 0x10, 0x10, 0x10, 0x10, 0x90, 0x60 },
+	// 0x4B 'K'
+	{ 0x88, 0x90, 0xA0, 0xC0, 0xA0, 0x90, 0x88 },
+	// 0x4C 'L'
+	{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0xF8 },
+	// 0x4D 'M'
+	{ 0x88, 0xD8, 0xA8, 0xA8, 0x88, 0x88, 0x88 },
+	// 0x4E 'N'
+	{ 0x88, 0xC8, 0xA8, 0x98, 0x88, 0x88, 0x88 },
+	// 0x4F 'O'
+	{ 0x70, 0x88, 0x88, 0x88, 0x88, 0x88, 0x70 },
+	// 0x50 'P'
+	{ 0xF0, 0x88, 0x88, 0xF0, 0x80, 0x80, 0x80 },
+	// 0x51 'Q'
+	{ 0x70, 0x88, 0x88, 0x88, 0xA8, 0x90, 0x68 },
+	// 0x52 'R'
+	{ 0xF0, 0x88, 0x88, 0xF0, 0xA0, 0x90, 0x88 },
+	// 0x53 'S'
+	{ 0x70, 0x88, 0x80, 0x70, 0x08, 0x88, 0x70 },
+	// 0x54 'T'
+	{ 0xF8, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20 },
+	// 0x55 'U'
+	{ 0x88, 0x88, 0x88, 0x88, 0x88, 0x88, 0x70 },
+	// 0x56 'V'
+	{ 0x88, 0x88, 0x88, 0x88, 0x50, 0x50, 0x20 },
+	// 0x57 'W'
+	{ 0x88, 0x88, 0x88, 0xA8, 0xA8, 0xD8, 0x88 },
+	// 0x58 'X'
+	{ 0x88, 0x88, 0x50, 0x20, 0x50, 0x88, 0x88 },
+	// 0x59 'Y'
+	{ 0x88, 0x88, 0x50, 0x20, 0x20, 0x20, 0x20 },
+	// 0x5A 'Z'
+	{ 0xF8, 0x08, 0x10, 0x20, 0x40, 0x80, 0xF8 },
+	// 0x5B '['
+	{ 0x70, 0x40, 0x40, 0x40, 0x40, 0x40, 0x70 },
+	// 0x5C '\'
+	{ 0x80, 0x40, 0x40, 0x20, 0x10, 0x10, 0x08 },
+	// 0x5D ']'
+	{ 0x70, 0x10, 0x10, 0x10, 0x10, 0x10, 0x70 },
+	// 0x5E '^'
+	{ 0x20, 0x50, 0x88, 0x00, 0x00, 0x00, 0x00 },
+	// 0x5F '_'
+	{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8 },
+};
 
 
 void
@@ -464,29 +618,55 @@ Compositor::_DrawText(RenderingBuffer& dst, int32 x, int32 y,
 {
 	if (text == NULL)
 		return;
+	if (!_IsSupported32BitBuffer(dst))
+		return;
 
-	uint8* bits = (uint8*)dst.Bits();
-	uint32 bpr = dst.BytesPerRow();
-	int32 cursor = x;
-	for (const char* c = text; *c != '\0'; c++) {
-		if (*c == ' ') {
-			cursor += 4;
+	uint8* bits   = (uint8*)dst.Bits();
+	uint32 bpr    = dst.BytesPerRow();
+	int32  dstRight  = (int32)dst.Bounds().right;
+	int32  dstBottom = (int32)dst.Bounds().bottom;
+	int32  cursor = x;
+
+	for (const char* cp = text; *cp != '\0'; cp++) {
+		int32 ch = (unsigned char)*cp;
+
+		if (ch < kGlyphFirst || ch > kGlyphLast) {
+			cursor += kGlyphWidth + 1;
 			continue;
 		}
-		for (int32 py = 0; py < 6; py++) {
+
+		const uint8* glyph = kGlyphs[ch - kGlyphFirst];
+
+		bool anyVisible = cursor <= dstRight
+			&& cursor + kGlyphWidth - 1 >= 0
+			&& y <= dstBottom
+			&& y + kGlyphHeight - 1 >= 0;
+
+		for (int32 py = 0; py < kGlyphHeight; py++) {
 			int32 yy = y + py;
-			if (yy < 0 || yy > (int32)dst.Bounds().bottom)
+			if (yy < 0 || yy > dstBottom)
 				continue;
-			for (int32 px = 0; px < 3; px++) {
-				int32 xx = cursor + px;
-				if (xx < 0 || xx > (int32)dst.Bounds().right)
+
+			uint8 row = glyph[py];
+
+			for (int32 px = 0; px < kGlyphWidth; px++) {
+				if ((row & (0x80 >> px)) == 0)
 					continue;
-				if (((*c + px + py) & 1) == 0)
-					((uint32*)(bits + yy * bpr))[xx] = color;
+
+				int32 xx = cursor + px;
+				if (xx < 0 || xx > dstRight)
+					continue;
+
+				((uint32*)(bits + yy * bpr))[xx] = color;
 			}
 		}
-		overlayRects.Include(BRect(cursor, y, cursor + 2, y + 5));
-		cursor += 4;
+
+		if (anyVisible) {
+			overlayRects.Include(BRect(cursor, y,
+				cursor + kGlyphWidth - 1, y + kGlyphHeight - 1));
+		}
+
+		cursor += kGlyphWidth + 1;
 	}
 }
 
@@ -513,6 +693,9 @@ Compositor::_DrawDebugOverlay(RenderingBuffer& dst, const BRegion& dirty,
 		" T%" B_PRId64, stats.dirtyRects, stats.blurredWindows,
 		stats.blurCacheHits, stats.blurCacheMisses, stats.blurTime);
 	_DrawText(dst, 8, 8, text.String(), textColor, stats.overlayRects);
+}
+
+void
 Compositor::_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
 	const rgb_color& background) const
 {
@@ -551,6 +734,7 @@ Compositor::_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
 				dstRow[x] = color;
 		}
 	}
+	// Placeholder for text drawing
 }
 
 
@@ -578,9 +762,9 @@ Compositor::_CopyRegion(RenderingBuffer& dst, RenderingBuffer& src,
 	uint32 dstBPR = dst.BytesPerRow();
 	uint32 srcBPR = src.BytesPerRow();
 
-	int32 count = region.CountRects();
+	int32 count = clipped.CountRects();
 	for (int32 i = 0; i < count; i++) {
-		BRect rect = region.RectAt(i);
+		BRect rect = clipped.RectAt(i);
 		int32 left = (int32)rect.left;
 		int32 right = (int32)rect.right;
 		int32 top = (int32)rect.top;
@@ -625,15 +809,15 @@ Compositor::_BlendRegion(RenderingBuffer& dst, RenderingBuffer& src,
 		return;
 
 	uint8* dstBits = (uint8*)dst.Bits();
-	uint8* srcBits = (uint8*)src.Bits();
 	uint32 dstBPR = dst.BytesPerRow();
+	uint8* srcBits = (uint8*)src.Bits();
 	uint32 srcBPR = src.BytesPerRow();
 	uint8 alphaByte = (uint8)(alpha * 255.0f);
 	uint8 invAlpha = 255 - alphaByte;
 
-	int32 count = region.CountRects();
+	int32 count = clipped.CountRects();
 	for (int32 i = 0; i < count; i++) {
-		BRect rect = region.RectAt(i);
+		BRect rect = clipped.RectAt(i);
 		int32 left = (int32)rect.left;
 		int32 right = (int32)rect.right;
 		int32 top = (int32)rect.top;
@@ -652,21 +836,6 @@ Compositor::_BlendRegion(RenderingBuffer& dst, RenderingBuffer& src,
 					+ ((srcRow[1] * alphaByte + 255) >> 8);
 				dstRow[2] = ((dstRow[2] * invAlpha + 255) >> 8)
 					+ ((srcRow[2] * alphaByte + 255) >> 8);
-				uint8 srcAlpha = srcRow[3];
-				if (srcAlpha == 0) {
-					dstRow += 4;
-					srcRow += 4;
-					continue;
-				}
-
-				uint16 combinedAlpha = (uint16(srcAlpha) * alphaByte + 127) / 255;
-				uint16 invAlpha = 255 - combinedAlpha;
-				dstRow[0] = (uint8)((srcRow[0] * combinedAlpha
-					+ dstRow[0] * invAlpha + 127) / 255);
-				dstRow[1] = (uint8)((srcRow[1] * combinedAlpha
-					+ dstRow[1] * invAlpha + 127) / 255);
-				dstRow[2] = (uint8)((srcRow[2] * combinedAlpha
-					+ dstRow[2] * invAlpha + 127) / 255);
 				dstRow[3] = 255;
 
 				dstRow += 4;

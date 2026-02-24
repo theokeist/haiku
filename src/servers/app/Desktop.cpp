@@ -120,6 +120,13 @@ title_matches_blur_policy_tokens(const char* title, const BString& tokens)
 			return true;
 
 		start = end + 1;
+	}
+
+	return false;
+}
+
+
+static bool
 title_contains_case_insensitive(const char* title, const char* needle)
 {
 	if (title == NULL || needle == NULL || *needle == '\0')
@@ -161,7 +168,7 @@ window_should_blur_behind(const Window* window)
 }
 
 
-static WindowSnapshot
+/* static WindowSnapshot
 resolve_effect_state(const Window* window,
 	const CompositorDebugOptions& options)
 {
@@ -201,8 +208,7 @@ resolve_effect_state(const Window* window,
 	snapshot.retained.valid = true;
 	return snapshot;
 }
-
-
+ */
 class KeyboardFilter : public EventFilter {
 	public:
 		KeyboardFilter(Desktop* desktop);
@@ -2092,13 +2098,8 @@ Desktop::ApplyCompositorSettings(const CompositorSettings& settings)
 	}
 
 	UnlockAllWindows();
-
 	if (HWInterface() != NULL)
 		HWInterface()->ApplyCompositorSettings(settings);
-		window->SetAlphaDebugEnabled(enabled);
-	}
-
-	UnlockAllWindows();
 }
 
 
@@ -3695,7 +3696,15 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 			if (window->IsHidden())
 				continue;
 
-			if (!dirtyRegion.Intersects(window->VisibleRegion().Frame()))
+			// Include windows that intersect the dirty region, or windows that
+			// are actively animating / have effects (alpha/blur) so the
+			// compositor can compose running windows even when not directly
+			// exposed by the dirty rect.
+			bool intersects = dirtyRegion.Intersects(window->VisibleRegion().Frame());
+			bool hasActiveEffect = window->IsAlphaAnimating()
+				|| window->BlurEnabled()
+				|| window->Alpha() < 1.0f;
+			if (!intersects && !hasActiveEffect)
 				continue;
 
 			WindowSnapshot snapshot;
@@ -3713,6 +3722,9 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 
 		HWInterface()->UpdateCompositorState(snapshots,
 			fWorkspaces[fCurrentWorkspace].Color());
+		
+		// Post the dirty region to the compositor for composition
+		HWInterface()->InvalidateRegion(dirtyRegion);
 	}
 
 	// send redraw messages to all windows intersecting the dirty region
@@ -3744,9 +3756,13 @@ Desktop::_ResolveEffectState(Window* window, bigtime_t now) const
 	state.blurRadius = window->BlurRadius();
 	state.blurRect = state.blurEnabled ? window->BlurRegion() : BRect();
 
-	bool policyBlur = false;
+	// Base policy: some windows are considered blur-behind by default
+	// (deskbar, notifications, floating untitled, etc.). Include that
+	// heuristic here so `window_should_blur_behind` and the compositor
+	// policy logic stay in sync.
+	bool policyBlur = window_should_blur_behind(window);
 	const char* title = window->Title();
-	if (fCompositorSettings.enable_title_blur_policy) {
+	if (!policyBlur && fCompositorSettings.enable_title_blur_policy) {
 		policyBlur = title_matches_blur_policy_tokens(title,
 			fCompositorSettings.blur_policy_tokens);
 	}

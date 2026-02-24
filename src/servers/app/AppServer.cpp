@@ -308,19 +308,6 @@ AppServer::_LoadCompositorSettings()
 {
 	fCompositorSettings.LoadFromSettingsFile();
 	_ApplyCompositorSettings();
-	status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
-	if (status < B_OK)
-		return status;
-
-	status = path.Append("system/app_server");
-	if (status < B_OK)
-		return status;
-
-	status = create_directory(path.Path(), 0755);
-	if (status < B_OK && status != B_FILE_EXISTS)
-		return status;
-
-	return path.Append("alpha_debug");
 }
 
 
@@ -369,10 +356,16 @@ AppServer::_ApplyCompositorSettings()
 
 
 void
-AppServer::_InvalidateAllDesktops(){
-			desktop->SetAlphaDebugEnabled(enabled);
+AppServer::_InvalidateAllDesktops()
+{
+	BAutolock locker(fDesktopLock);
+	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
+		Desktop* desktop = fDesktops.ItemAt(i);
+		if (desktop != NULL) {
+			desktop->Redraw();
+		}
 	}
-
+}
 
 
 status_t
@@ -450,8 +443,8 @@ AppServer::_ApplyCompositorDebugSetting(const CompositorDebugOptions& options)
 	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
 		Desktop* desktop = fDesktops.ItemAt(i);
 		if (desktop != NULL) {
-			desktop->SetCompositorDebugOptions(options);
 			desktop->Redraw();
+			desktop->SetCompositorDebugOptions(options);
 		}
 	}
 }
@@ -541,6 +534,29 @@ AppServer::_FindDesktop(uid_t userID, const char* targetScreen)
 	}
 
 	return NULL;
+}
+
+
+status_t
+AppServer::_AlphaDebugSettingsPath(BPath& path) const
+{
+	// Return a path to the alpha debug settings file
+	// For now, use a temporary location
+	return path.SetTo("/tmp/haiku_alpha_debug");
+}
+
+
+void
+AppServer::_ApplyAlphaDebugSetting(bool enabled)
+{
+	// Apply alpha debug settings to all desktops
+	BAutolock locker(fDesktopLock);
+	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
+		Desktop* desktop = fDesktops.ItemAt(i);
+		if (desktop != NULL) {
+			// TODO: Implement alpha debug setting application
+		}
+	}
 }
 
 

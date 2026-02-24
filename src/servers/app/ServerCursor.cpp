@@ -25,9 +25,57 @@
 
 #include <new>
 #include <stdio.h>
+#include <algorithm>
 
 
 using std::nothrow;
+
+// Helper: detect whether pixels are premultiplied and premultiply if needed.
+static void
+ensure_premultiplied_rgba32(uint8* bits, uint32 width, uint32 height,
+	uint32 bytesPerRow)
+{
+	if (!bits)
+		return;
+
+	// Quick scan to detect non-premultiplied pixels. If any color channel
+	// component is greater than alpha, assume data is not premultiplied.
+	const uint32 scanPixels = std::min<uint32>(width * height, 256);
+	uint32 checked = 0;
+	for (uint32 y = 0; y < height && checked < scanPixels; ++y) {
+		uint8* row = bits + y * bytesPerRow;
+		for (uint32 x = 0; x < width && checked < scanPixels; ++x, ++checked) {
+			uint8 r = row[x * 4 + 0];
+			uint8 g = row[x * 4 + 1];
+			uint8 b = row[x * 4 + 2];
+			uint8 a = row[x * 4 + 3];
+			if (r > a || g > a || b > a) {
+				// Not premultiplied: perform full premultiplication for all pixels
+				for (uint32 yy = 0; yy < height; ++yy) {
+					uint8* rrow = bits + yy * bytesPerRow;
+					for (uint32 xx = 0; xx < width; ++xx) {
+						uint8* p = rrow + xx * 4;
+						uint8 pr = p[0];
+						uint8 pg = p[1];
+						uint8 pb = p[2];
+						uint8 pa = p[3];
+						if (pa == 255) {
+							// already full alpha
+							continue;
+						} else if (pa == 0) {
+							p[0] = p[1] = p[2] = 0;
+							continue;
+						}
+						p[0] = (uint8)((pr * (uint32)pa + 127) / 255);
+						p[1] = (uint8)((pg * (uint32)pa + 127) / 255);
+						p[2] = (uint8)((pb * (uint32)pa + 127) / 255);
+					}
+				}
+				return;
+			}
+		}
+	}
+}
 
 
 /*!	\brief Constructor
@@ -134,8 +182,12 @@ ServerCursor::ServerCursor(const uint8* alreadyPaddedData, uint32 width,
 	fManager(NULL)
 {
 	AllocateBuffer();
-	if (Bits())
+	if (Bits()) {
 		memcpy(Bits(), alreadyPaddedData, BitsLength());
+		if (format == B_RGBA32)
+			ensure_premultiplied_rgba32((uint8*)Bits(), width, height,
+				(BytesPerRow()));
+	}
 }
 
 

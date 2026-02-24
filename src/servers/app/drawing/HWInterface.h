@@ -294,8 +294,6 @@ protected:
 			int32				fCompositorLogLevel;
 			BLocker				fCompositorSettingsLock;
 			CompositorDebugOptions	fCompositorDebugOptions;
-			int64				fCompositorFrameCounter;
-			int64				fCompositorLogEveryN;
 			BRegion				fPendingInvalidate;
 			BLocker				fPresentInvalidateLock;
 			thread_id			fPresentThread;

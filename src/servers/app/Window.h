@@ -131,6 +131,7 @@ public:
 			void				SetClipping(BRegion* stillAvailableOnScreen);
 			// you need to have ReadLock()ed the clipping!
 	inline	BRegion&			VisibleRegion() { return fVisibleRegion; }
+	inline	const BRegion&		VisibleRegion() const { return fVisibleRegion; }
 			BRegion&			VisibleContentRegion();
 
 			// TODO: not protected by a lock, but noone should need this anyways

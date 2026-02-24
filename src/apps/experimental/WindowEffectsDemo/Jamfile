@@ -5,4 +5,4 @@ UsePrivateSystemHeaders ;
 
 Application WindowEffectsDemo :
 	WindowEffectsDemo.cpp
-	: be [ TargetLibstdc++ ] [ TargetLibsupc++ ] ;
+	: be localestub [ TargetLibstdc++ ] [ TargetLibsupc++ ] ;
