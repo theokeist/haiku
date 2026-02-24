@@ -6,6 +6,7 @@
 #define PRESENT_QUEUE_H
 
 #include <AutoDeleter.h>
+#include <GraphicsDefs.h>
 #include <Locker.h>
 #include <Region.h>
 

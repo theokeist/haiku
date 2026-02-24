@@ -106,7 +106,7 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 	fCurrentControlLook(NULL),
 	fSavedDoubleArrowsValue(_DoubleScrollBarArrows()),
 	fSavedAlphaDebugValue(_AlphaDebugControlsEnabled()),
-	fCurrentAlphaDebugValue(fSavedAlphaDebugValue)
+	fCurrentAlphaDebugValue(fSavedAlphaDebugValue),
 	fSavedAlphaDebugEnabled(false),
 	fCurrentAlphaDebugEnabled(false),
 	fSavedForceEffectsAll(false),
@@ -770,7 +770,7 @@ LookAndFeelSettingsView::IsDefaultable()
 	return fCurrentDecor != fDecorUtility.DefaultDecorator()->ShortcutName()
 		|| fCurrentControlLook.Length() != 0
 		|| _DoubleScrollBarArrows() != false
-		|| fCurrentAlphaDebugValue != kDefaultAlphaDebugControlsSetting;
+		|| fCurrentAlphaDebugValue != kDefaultAlphaDebugControlsSetting
 		|| fCurrentAlphaDebugEnabled != false
 		|| fCurrentForceEffectsAll != false
 		|| fCurrentCompositorOverlay != false
@@ -805,7 +805,7 @@ LookAndFeelSettingsView::IsRevertable()
 	return fCurrentDecor != fSavedDecor
 		|| fCurrentControlLook != fSavedControlLook
 		|| _DoubleScrollBarArrows() != fSavedDoubleArrowsValue
-		|| fCurrentAlphaDebugValue != fSavedAlphaDebugValue;
+		|| fCurrentAlphaDebugValue != fSavedAlphaDebugValue
 		|| fCurrentAlphaDebugEnabled != fSavedAlphaDebugEnabled
 		|| fCurrentForceEffectsAll != fSavedForceEffectsAll
 		|| fCurrentCompositorOverlay != fSavedCompositorOverlay

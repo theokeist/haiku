@@ -493,7 +493,7 @@ ServerWindow::GetInfo(window_info& info)
 void
 ServerWindow::SetAlpha(float alpha)
 {
-	Window* window = Window();
+	::Window* window = fWindow.Get();
 	if (window != NULL)
 		window->SetAlpha(alpha);
 }

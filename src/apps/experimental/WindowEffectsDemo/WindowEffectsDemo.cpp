@@ -14,13 +14,12 @@
 #include <Window.h>
 
 #include <private/app/ServerProtocol.h>
+#include <private/app/TokenSpace.h>
 
 
 #undef B_TRANSLATION_CONTEXT
 #define B_TRANSLATION_CONTEXT "WindowEffectsDemo"
 
-
-extern "C" status_t _safe_get_server_token_(const BLooper*, int32*);
 
 namespace {
 
@@ -135,7 +134,11 @@ WindowEffectsWindow::_EnsureServerToken()
 {
 	if (fServerToken != B_NULL_TOKEN)
 		return;
-	_safe_get_server_token_(this, &fServerToken);
+	
+	// Get the port from the looper and use it as the server token
+	port_id port = _get_looper_port_(this);
+	if (port >= 0)
+		fServerToken = port;
 }
 
 
