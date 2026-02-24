@@ -68,6 +68,36 @@ _AppendStressReplayRegions(const BRegion& base, const IntRect& bounds,
 } // namespace
 
 
+static inline int32
+atomic_add_compat(volatile int32* value, int32 addValue)
+{
+	return atomic_add(const_cast<int32*>(value), addValue);
+}
+
+
+static inline int32
+atomic_get_compat(volatile int32* value)
+{
+	return atomic_get(const_cast<int32*>(value));
+}
+
+
+static inline void
+atomic_set_compat(volatile int32* value, int32 newValue)
+{
+	atomic_set(const_cast<int32*>(value), newValue);
+}
+
+
+static inline int32
+atomic_test_and_set_compat(volatile int32* value, int32 newValue,
+	int32 testAgainst)
+{
+	return atomic_test_and_set(const_cast<int32*>(value), newValue,
+		testAgainst);
+}
+
+
 HWInterfaceListener::HWInterfaceListener()
 {
 }
@@ -385,7 +415,7 @@ HWInterface::InvalidateRegion(const BRegion& region)
 					pendingBefore, fPendingInvalidate.CountRects());
 			}
 		}
-		atomic_add(&fPendingInvalidations, 1);
+		atomic_add_compat(&fPendingInvalidations, 1);
 		_SchedulePresent();
 		return B_OK;
 	}
@@ -597,7 +627,7 @@ HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 			fullBounds.Set((BRect)buffer->Bounds());
 			fPendingInvalidate.Include(&fullBounds);
 		}
-		atomic_add(&fPendingInvalidations, 1);
+		atomic_add_compat(&fPendingInvalidations, 1);
 		_SchedulePresent();
 	}
 }
@@ -697,8 +727,7 @@ HWInterface::_SchedulePresent()
 	if (fPresentSemaphore < 0)
 		return;
 
-	// Coalesce wakeups: only release the semaphore on a 0 -> 1 transition.
-	if (atomic_test_and_set(&fPresentScheduled, 1, 0) == 0)
+	if (atomic_test_and_set_compat(&fPresentScheduled, 1, 0) == 0)
 		release_sem(fPresentSemaphore);
 }
 
@@ -837,13 +866,8 @@ HWInterface::_ProcessPendingInvalidate()
 	PresentQueue::PressureMetrics pressure = fPresentQueue->GetPressureMetrics();
 	UnlockExclusiveAccess();
 
-	int32 invalidations = atomic_get(&fPendingInvalidations);
-	atomic_set(&fPendingInvalidations, 0);
-	int32 pendingDirtyRects = 0;
-	{
-		BAutolock _(fPresentInvalidateLock);
-		pendingDirtyRects = fPendingInvalidate.CountRects();
-	}
+	int32 invalidations = atomic_get_compat(&fPendingInvalidations);
+	atomic_set_compat(&fPendingInvalidations, 0);
 
 	fCompositorFrameCounter++;
 	fCompositorComposeAccum += stats.composeTime;
@@ -925,20 +949,26 @@ status_t
 HWInterface::_PresentThreadEntry(void* data)
 {
 	HWInterface* interface = static_cast<HWInterface*>(data);
-	while (atomic_get(&interface->fPresentThreadRunning) != 0) {
+	while (atomic_get_compat(&interface->fPresentThreadRunning) != 0) {
 		status_t status = acquire_sem(interface->fPresentSemaphore);
 		if (status != B_OK
-			|| atomic_get(&interface->fPresentThreadRunning) == 0) {
+			|| atomic_get_compat(&interface->fPresentThreadRunning) == 0) {
 			continue;
 		}
 
-		while (atomic_get(&interface->fPresentThreadRunning) != 0) {
+		while (atomic_get_compat(&interface->fPresentThreadRunning) != 0) {
 			interface->_ProcessPendingInvalidate();
 
 			// Mark scheduling slot as free. If new work arrived while composing,
 			// re-arm before leaving the loop so producers don't miss a wakeup.
-			atomic_set(&interface->fPresentScheduled, 0);
+			atomic_set_compat(&interface->fPresentScheduled, 0);
 			if (!interface->_HasPendingInvalidate())
+				break;
+
+			// New invalidations arrived while processing. Re-arm the scheduled
+			// state so producers won't skip the semaphore release.
+			if (atomic_test_and_set_compat(&interface->fPresentScheduled, 1, 0)
+				!= 0) {
 				break;
 
 			// New invalidations arrived while processing. Re-arm the scheduled
@@ -1135,7 +1165,16 @@ HWInterface::_DrawCursor(IntRect area) const
 	if (!backBuffer || !area.IsValid())
 		return;
 
-	IntRect cf = _CursorFrame();
+	ServerCursorReference cursor;
+	IntRect cf;
+	if (fFloatingOverlaysLock.Lock()) {
+		cursor = fCursorAndDragBitmap;
+		cf = _CursorFrame();
+		fFloatingOverlaysLock.Unlock();
+	}
+
+	if (!cursor)
+		return;
 
 	// make sure we don't copy out of bounds
 	area = backBuffer->Bounds() & area;
@@ -1163,8 +1202,8 @@ HWInterface::_DrawCursor(IntRect area) const
 		src += area.top * srcBPR + area.left * 4;
 
 		// offset into cursor bitmap
-		uint8* crs = (uint8*)fCursorAndDragBitmap->Bits();
-		uint32 crsBPR = fCursorAndDragBitmap->BytesPerRow();
+		uint8* crs = (uint8*)cursor->Bits();
+		uint32 crsBPR = cursor->BytesPerRow();
 		// since area is clipped to cf,
 		// the diff between area.top and cf.top is always positive,
 		// same for diff between area.left and cf.left
