@@ -280,8 +280,6 @@ protected:
 			std::vector<WindowSnapshot>
 								fWindowSnapshots;
 			rgb_color			fCompositorBackground;
-			int64				fCompositorFrameCounter;
-			int64				fCompositorLogEveryN;
 			int64				fCompositorComposeAccum;
 			int32				fCompositorComposeCount;
 			bool				fCompositorAnimActive;
@@ -302,9 +300,6 @@ protected:
 			BLocker				fPresentInvalidateLock;
 			thread_id			fPresentThread;
 			sem_id				fPresentSemaphore;
-			volatile int32		fPresentScheduled;
-			volatile int32		fPresentThreadRunning;
-			volatile int32		fPendingInvalidations;
 			int32				fPresentScheduled;
 			int32				fPresentThreadRunning;
 			int32				fPendingInvalidations;

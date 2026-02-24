@@ -369,10 +369,10 @@ AppServer::_ApplyCompositorSettings()
 
 
 void
-AppServer::_InvalidateAllDesktops()
+AppServer::_InvalidateAllDesktops(){
 			desktop->SetAlphaDebugEnabled(enabled);
 	}
-}
+
 
 
 status_t
@@ -449,9 +449,10 @@ AppServer::_ApplyCompositorDebugSetting(const CompositorDebugOptions& options)
 	BAutolock locker(fDesktopLock);
 	for (int32 i = 0; i < fDesktops.CountItems(); i++) {
 		Desktop* desktop = fDesktops.ItemAt(i);
-		if (desktop != NULL)
-			desktop->Redraw();
+		if (desktop != NULL) {
 			desktop->SetCompositorDebugOptions(options);
+			desktop->Redraw();
+		}
 	}
 }
 

@@ -36,9 +36,7 @@ struct WindowSnapshot {
 	float			blurRadius;
 	BRect			blurRect;
 	Window*			window;
-	uint8			blurRadius;
 	bool			blurBehind;
-	bool			opaqueFastPath;
 	RetainedSurfaceMetadata	retained;
 };
 
@@ -54,7 +52,6 @@ struct ComposeStats {
 	int64			blurredPixels;
 	int32			blurCacheHits;
 	int32			blurCacheMisses;
-	bigtime_t		blurTime;
 	BRegion			overlayRects;
 	int32			cacheHits;
 	int32			cacheMisses;
