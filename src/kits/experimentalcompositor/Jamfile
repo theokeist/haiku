@@ -1,0 +1,15 @@
+SubDir HAIKU_TOP src kits experimentalcompositor ;
+
+SubDirSysHdrs $(SUBDIR) ;
+
+if $(TARGET_PLATFORM) = haiku {
+	local architectureObject ;
+	for architectureObject in [ MultiArchSubDirSetup ] {
+		on $(architectureObject) {
+			SharedLibrary [ MultiArchDefaultGristFiles libexperimentalcompositor.so ] :
+				ExperimentalCompositor.cpp
+				: be [ TargetLibsupc++ ]
+				;
+		}
+	}
+}

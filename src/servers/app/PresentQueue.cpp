@@ -18,6 +18,10 @@ PresentQueue::PresentQueue(int32 width, int32 height, color_space format)
 	fRenderIndex(0),
 	fReadyIndex(-1),
 	fBufferCount(0),
+	fAcquireReuseCount(0),
+	fReadyOverwriteCount(0),
+	fUnknownSubmitCount(0),
+	fLogLevel(0),
 	fLock("present queue lock")
 {
 	_AllocateBuffers(width, height, format);
@@ -58,7 +62,8 @@ PresentQueue::AcquireForRender()
 	if (chosenIndex < 0) {
 		// All buffers are ready; latest wins, so reuse the render index.
 		chosenIndex = fRenderIndex;
-		debug_printf("present queue: all buffers busy, reusing buffer\n");
+		if (fLogLevel >= 2)
+			debug_printf("present queue: all buffers busy, reusing buffer\n");
 	}
 
 	fRenderIndex = chosenIndex;
@@ -75,21 +80,50 @@ PresentQueue::Submit(RenderingBuffer* buffer, const BRegion& dirty)
 	if (fBufferCount == 0 || buffer == NULL)
 		return;
 
+	// Resolve the queue entry from the actual submitted buffer pointer. This
+	// avoids assuming fRenderIndex still points at the same entry under bursty
+	// producer/consumer timing.
+	int32 submitIndex = -1;
+	for (int32 i = 0; i < fBufferCount; i++) {
+		if (fEntries[i].buffer.Get() == buffer) {
+			submitIndex = i;
+			break;
+		}
+	}
+
+	if (submitIndex < 0) {
+		fUnknownSubmitCount++;
+		debug_printf("present queue: submit for unknown buffer %p\n", buffer);
+		return;
+	}
+
 	int32 pendingBefore = fPendingDirty.CountRects();
 	fPendingDirty.Include(&dirty);
-	if (fPendingDirty.CountRects() < pendingBefore) {
+	if (fPendingDirty.CountRects() < pendingBefore && fLogLevel >= 2) {
 		debug_printf("present queue: pending dirty shrank unexpectedly "
 			"(before=%" B_PRId32 " after=%" B_PRId32 ")\n",
 			pendingBefore, fPendingDirty.CountRects());
 	}
 
-	fEntries[fRenderIndex].dirty = dirty;
-	fEntries[fRenderIndex].ready = true;
+	fEntries[submitIndex].dirty = dirty;
+	fEntries[submitIndex].ready = true;
 	// Latest-ready frame wins while dirty accumulates until present.
-	if (fReadyIndex >= 0 && fReadyIndex != fRenderIndex)
+	if (fReadyIndex >= 0 && fReadyIndex != submitIndex) {
+		fReadyOverwriteCount++;
 		fEntries[fReadyIndex].ready = false;
-	fReadyIndex = fRenderIndex;
-	fRenderIndex = (fRenderIndex + 1) % fBufferCount;
+	}
+	fReadyIndex = submitIndex;
+	fRenderIndex = (submitIndex + 1) % fBufferCount;
+}
+
+
+PresentQueue::PressureMetrics
+PresentQueue::GetPressureMetrics()
+{
+	BAutolock _(fLock);
+	PressureMetrics metrics = {fAcquireReuseCount, fReadyOverwriteCount,
+		fUnknownSubmitCount};
+	return metrics;
 }
 
 
@@ -114,15 +148,22 @@ PresentQueue::PresentNext(HWInterface& interface, bool vsync)
 		fReadyIndex = -1;
 	}
 
-	if (dirty.CountRects() == 0) {
+	if (dirty.CountRects() == 0 && fLogLevel >= 2)
 		debug_printf("present queue: presenting with empty dirty region\n");
-	}
 
 	bigtime_t start = system_time();
 	if (vsync)
 		interface.WaitForRetrace(0);
 	interface.PresentBuffer(buffer, dirty);
 	return system_time() - start;
+}
+
+
+void
+PresentQueue::SetLogLevel(int32 logLevel)
+{
+	BAutolock _(fLock);
+	fLogLevel = logLevel;
 }
 
 
@@ -138,6 +179,9 @@ PresentQueue::_AllocateBuffers(int32 width, int32 height, color_space format)
 	fRenderIndex = 0;
 	fReadyIndex = -1;
 	fPendingDirty.MakeEmpty();
+	fAcquireReuseCount = 0;
+	fReadyOverwriteCount = 0;
+	fUnknownSubmitCount = 0;
 
 	for (int32 i = 0; i < 3; i++) {
 		fEntries[i].buffer.SetTo(new(std::nothrow) MallocBuffer(width, height));

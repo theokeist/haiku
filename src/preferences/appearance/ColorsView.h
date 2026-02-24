@@ -27,6 +27,7 @@
 #include <ScrollView.h>
 #include <String.h>
 #include <StringView.h>
+#include <TextControl.h>
 #include <View.h>
 
 #include <DecorInfo.h>
@@ -56,6 +57,9 @@ private:
 			void				_SetColor(color_which which, rgb_color color);
 			void				_SetCurrentColor(rgb_color color);
 			void				_SetUIColors(const BMessage& colors);
+			void				_SetColorText(const rgb_color& color);
+			bool				_ParseColorText(const BString& text,
+								rgb_color& color) const;
 
 private:
 			BColorControl*		fPicker;
@@ -68,6 +72,7 @@ private:
 			BScrollView*		fScrollView;
 
 			BPrivate::BColorPreview*	fColorPreview;
+			BTextControl*		fColorTextControl;
 
 			BMessage			fPrevColors;
 			BMessage			fDefaultColors;

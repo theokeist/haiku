@@ -31,6 +31,8 @@
 #include <Locale.h>
 #include <MenuField.h>
 #include <MenuItem.h>
+#include <Messenger.h>
+#include <Message.h>
 #include <Path.h>
 #include <PathFinder.h>
 #include <PopUpMenu.h>
@@ -47,6 +49,7 @@
 #include "AppearanceWindow.h"
 #include "FakeScrollBar.h"
 
+#include <private/app/ServerProtocol.h>
 
 #undef B_TRANSLATION_CONTEXT
 #define B_TRANSLATION_CONTEXT "DecorSettingsView"
@@ -63,6 +66,7 @@ static const int32 kMsgDoubleScrollBarArrows = 'dsba';
 
 static const int32 kMsgArrowStyleSingle = 'mass';
 static const int32 kMsgArrowStyleDouble = 'masd';
+static const int32 kMsgAlphaDebugControls = 'aldb';
 static const int32 kMsgAlphaDebugEnabled = 'adbg';
 static const int32 kMsgCompositorForceEffects = 'cmfe';
 static const int32 kMsgCompositorOverlay = 'cmov';
@@ -70,6 +74,11 @@ static const int32 kMsgCompositorTimings = 'cmtm';
 static const int32 kMsgCompositorStress = 'cmst';
 
 static const bool kDefaultDoubleScrollBarArrowsSetting = false;
+static const bool kDefaultAlphaDebugControlsSetting = false;
+
+static const char* kSettingsDir = "system/app_server";
+static const char* kSettingsFile = "compositor_settings";
+static const char* kDebugControlsKey = "debug_controls";
 
 
 //	#pragma mark - LookAndFeelSettingsView
@@ -96,6 +105,8 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 	fSavedControlLook(NULL),
 	fCurrentControlLook(NULL),
 	fSavedDoubleArrowsValue(_DoubleScrollBarArrows()),
+	fSavedAlphaDebugValue(_AlphaDebugControlsEnabled()),
+	fCurrentAlphaDebugValue(fSavedAlphaDebugValue)
 	fSavedAlphaDebugEnabled(false),
 	fCurrentAlphaDebugEnabled(false),
 	fSavedForceEffectsAll(false),
@@ -146,6 +157,9 @@ LookAndFeelSettingsView::LookAndFeelSettingsView(const char* name)
 		new BMessage(kMsgArrowStyleSingle));
 	fArrowStyleDouble = new FakeScrollBar(true, true,
 		new BMessage(kMsgArrowStyleDouble));
+	fAlphaDebugCheckBox = new BCheckBox("alpha_debug",
+		B_TRANSLATE("Enable alpha debug controls"),
+		new BMessage(kMsgAlphaDebugControls));
 	fAlphaDebugCheckBox = new BCheckBox("alpha_debug_controls",
 		B_TRANSLATE("Enable alpha debug controls"),
 		new BMessage(kMsgAlphaDebugEnabled));
@@ -245,6 +259,9 @@ LookAndFeelSettingsView::AttachedToWindow()
 	else
 		fArrowStyleSingle->SetValue(B_CONTROL_ON);
 
+	fAlphaDebugCheckBox->SetValue(
+		fSavedAlphaDebugValue ? B_CONTROL_ON : B_CONTROL_OFF);
+
 	if (fCurrentAlphaDebugEnabled)
 		fAlphaDebugCheckBox->SetValue(B_CONTROL_ON);
 }
@@ -337,6 +354,9 @@ LookAndFeelSettingsView::MessageReceived(BMessage* message)
 		case kMsgArrowStyleDouble:
 			_SetDoubleScrollBarArrows(true);
 			break;
+		case kMsgAlphaDebugControls:
+			_SetAlphaDebugControls(
+				fAlphaDebugCheckBox->Value() == B_CONTROL_ON);
 		case kMsgAlphaDebugEnabled:
 		{
 			bool enabled = fAlphaDebugCheckBox->Value() == B_CONTROL_ON;
@@ -538,7 +558,7 @@ LookAndFeelSettingsView::_AlphaDebugSettingsPath(BPath& path) const
 		return status;
 
 	status = create_directory(path.Path(), 0755);
-	if (status < B_OK)
+	if (status < B_OK && status != B_FILE_EXISTS)
 		return status;
 
 	return path.Append("alpha_debug");
@@ -557,7 +577,7 @@ LookAndFeelSettingsView::_CompositorDebugSettingsPath(BPath& path) const
 		return status;
 
 	status = create_directory(path.Path(), 0755);
-	if (status < B_OK)
+	if (status < B_OK && status != B_FILE_EXISTS)
 		return status;
 
 	return path.Append("compositor_debug");
@@ -658,10 +678,97 @@ LookAndFeelSettingsView::_SetAlphaDebugEnabled(bool enabled)
 	if (settings.Flatten(&file) != B_OK)
 		return;
 
+	// Notify app_server immediately so alpha-debug visuals update live without
+	// waiting for settings polling.
+	settings.what = AS_INTERNAL_SET_ALPHA_DEBUG;
+	BMessenger messenger("application/x-vnd.Haiku-app_server");
+	if (messenger.IsValid())
+		messenger.SendMessage(&settings);
+
 	fCurrentAlphaDebugEnabled = enabled;
 	fAlphaDebugCheckBox->SetValue(enabled ? B_CONTROL_ON : B_CONTROL_OFF);
 	Window()->PostMessage(kMsgUpdate);
 }
+
+
+bool
+LookAndFeelSettingsView::_AlphaDebugControlsEnabled()
+{
+	BPath path;
+	if (_SettingsPath(path) != B_OK)
+		return kDefaultAlphaDebugControlsSetting;
+
+	BFile file(path.Path(), B_READ_ONLY);
+	if (file.InitCheck() != B_OK)
+		return kDefaultAlphaDebugControlsSetting;
+
+	BMessage settings;
+	if (settings.Unflatten(&file) != B_OK)
+		return kDefaultAlphaDebugControlsSetting;
+
+	return settings.GetBool(kDebugControlsKey,
+		kDefaultAlphaDebugControlsSetting);
+}
+
+
+void
+LookAndFeelSettingsView::_SetAlphaDebugControls(bool enabled)
+{
+	if (fCurrentAlphaDebugValue == enabled)
+		return;
+
+	fCurrentAlphaDebugValue = enabled;
+	fAlphaDebugCheckBox->SetValue(
+		enabled ? B_CONTROL_ON : B_CONTROL_OFF);
+
+	BPath path;
+	if (_SettingsPath(path) != B_OK)
+		return;
+
+	BMessage settings;
+	{
+		BFile file(path.Path(), B_READ_ONLY);
+		if (file.InitCheck() == B_OK)
+			settings.Unflatten(&file);
+	}
+
+	settings.RemoveName(kDebugControlsKey);
+	settings.AddBool(kDebugControlsKey, enabled);
+
+	{
+		BFile file(path.Path(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+		if (file.InitCheck() != B_OK)
+			return;
+		if (settings.Flatten(&file) != B_OK)
+			return;
+	}
+
+	BMessenger messenger("application/x-vnd.Haiku-app_server");
+	if (messenger.IsValid()) {
+		BMessage reload(AS_INTERNAL_RELOAD_COMPOSITOR_SETTINGS);
+		messenger.SendMessage(&reload);
+	}
+}
+
+
+status_t
+LookAndFeelSettingsView::_SettingsPath(BPath& path) const
+{
+	status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
+	if (status != B_OK)
+		return status;
+
+	status = path.Append(kSettingsDir);
+	if (status != B_OK)
+		return status;
+
+	status = create_directory(path.Path(), 0755);
+	if (status != B_OK)
+		return status;
+
+	return path.Append(kSettingsFile);
+}
+
 
 
 bool
@@ -670,6 +777,7 @@ LookAndFeelSettingsView::IsDefaultable()
 	return fCurrentDecor != fDecorUtility.DefaultDecorator()->ShortcutName()
 		|| fCurrentControlLook.Length() != 0
 		|| _DoubleScrollBarArrows() != false
+		|| fCurrentAlphaDebugValue != kDefaultAlphaDebugControlsSetting;
 		|| fCurrentAlphaDebugEnabled != false
 		|| fCurrentForceEffectsAll != false
 		|| fCurrentCompositorOverlay != false
@@ -684,6 +792,7 @@ LookAndFeelSettingsView::SetDefaults()
 	_SetDecor(fDecorUtility.DefaultDecorator());
 	_SetControlLook(BString(""));
 	_SetDoubleScrollBarArrows(false);
+	_SetAlphaDebugControls(kDefaultAlphaDebugControlsSetting);
 	_SetAlphaDebugEnabled(false);
 	fCurrentForceEffectsAll = false;
 	fCurrentCompositorOverlay = false;
@@ -703,6 +812,7 @@ LookAndFeelSettingsView::IsRevertable()
 	return fCurrentDecor != fSavedDecor
 		|| fCurrentControlLook != fSavedControlLook
 		|| _DoubleScrollBarArrows() != fSavedDoubleArrowsValue
+		|| fCurrentAlphaDebugValue != fSavedAlphaDebugValue;
 		|| fCurrentAlphaDebugEnabled != fSavedAlphaDebugEnabled
 		|| fCurrentForceEffectsAll != fSavedForceEffectsAll
 		|| fCurrentCompositorOverlay != fSavedCompositorOverlay
@@ -718,6 +828,7 @@ LookAndFeelSettingsView::Revert()
 		_SetDecor(fSavedDecor);
 		_SetControlLook(fSavedControlLook);
 		_SetDoubleScrollBarArrows(fSavedDoubleArrowsValue);
+		_SetAlphaDebugControls(fSavedAlphaDebugValue);
 		_SetAlphaDebugEnabled(fSavedAlphaDebugEnabled);
 		fCurrentForceEffectsAll = fSavedForceEffectsAll;
 		fCurrentCompositorOverlay = fSavedCompositorOverlay;

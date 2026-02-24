@@ -126,10 +126,11 @@ StdBinCommands
 	setarch.cpp
 	setcontrollook.cpp
 	setdecor.cpp
+	setwindowalpha.cpp
+	setwindoweffects.cpp
 	setalphadebug.cpp
 	setcompositordebug.cpp
 	listwindowtokens.cpp
-	setwindowalpha.cpp
 	settype.cpp
 	spybmessage.cpp
 	urlwrapper.cpp

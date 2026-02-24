@@ -34,6 +34,7 @@
 #include "DelayedMessage.h"
 #include "DesktopListener.h"
 #include "DesktopSettings.h"
+#include "CompositorSettings.h"
 #include "EventDispatcher.h"
 #include "MessageLooper.h"
 #include "MultiLocker.h"
@@ -217,6 +218,8 @@ public:
 			void				SetWindowFlags(Window* window, uint32 flags);
 			void				SetWindowTitle(Window* window,
 									const char* title);
+			void				ApplyCompositorSettings(
+									const CompositorSettings& settings);
 			void				SetAlphaDebugEnabled(bool enabled);
 			void				SetCompositorDebugOptions(
 									const CompositorDebugOptions& options);
@@ -261,6 +264,9 @@ public:
 			void				MinimizeApplication(team_id team);
 			void				BringApplicationToFront(team_id team);
 			void				WindowAction(int32 windowToken, int32 action);
+			// Internal app_server helper: set window alpha by server token while
+			// holding Desktop window locks.
+			bool				SetWindowAlpha(int32 windowToken, float alpha);
 
 			void				WriteWindowList(team_id team,
 									BPrivate::LinkSender& sender);
@@ -322,6 +328,16 @@ private:
 									BRegion& stillAvailableOnScreen);
 			void				_TriggerWindowRedrawing(
 									BRegion& dirtyRegion, BRegion& exposeRegion);
+			struct CompositorEffectState {
+				float	alpha;
+				bool	opaqueFastPath;
+				bool	animActive;
+				bool	blurEnabled;
+				float	blurRadius;
+				BRect	blurRect;
+			};
+			CompositorEffectState	_ResolveEffectState(Window* window,
+								bigtime_t now) const;
 			void				_SetBackground(BRegion& background);
 
 			status_t			_ActivateApp(team_id team);
@@ -384,6 +400,7 @@ private:
 			int32				fViewUnderMouse;
 			BPoint				fLastMousePosition;
 			int32				fLastMouseButtons;
+			CompositorSettings	fCompositorSettings;
 			bool				fAlphaDebugEnabled;
 			CompositorDebugOptions	fCompositorDebugOptions;
 
