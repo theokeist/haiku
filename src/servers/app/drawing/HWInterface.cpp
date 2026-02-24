@@ -31,6 +31,36 @@
 using std::nothrow;
 
 
+static inline int32
+atomic_add_compat(volatile int32* value, int32 addValue)
+{
+	return atomic_add(const_cast<int32*>(value), addValue);
+}
+
+
+static inline int32
+atomic_get_compat(volatile int32* value)
+{
+	return atomic_get(const_cast<int32*>(value));
+}
+
+
+static inline void
+atomic_set_compat(volatile int32* value, int32 newValue)
+{
+	atomic_set(const_cast<int32*>(value), newValue);
+}
+
+
+static inline int32
+atomic_test_and_set_compat(volatile int32* value, int32 newValue,
+	int32 testAgainst)
+{
+	return atomic_test_and_set(const_cast<int32*>(value), newValue,
+		testAgainst);
+}
+
+
 HWInterfaceListener::HWInterfaceListener()
 {
 }
@@ -324,7 +354,7 @@ HWInterface::InvalidateRegion(const BRegion& region)
 					pendingBefore, fPendingInvalidate.CountRects());
 			}
 		}
-		atomic_add(&fPendingInvalidations, 1);
+		atomic_add_compat(&fPendingInvalidations, 1);
 		_SchedulePresent();
 		return B_OK;
 	}
@@ -478,12 +508,11 @@ HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
 		RenderingBuffer* buffer = DrawingBuffer();
 		if (buffer != NULL) {
-			BAutolock _(fPresentInvalidateLock);
 			BRegion fullBounds;
 			fullBounds.Set((BRect)buffer->Bounds());
 			fPendingInvalidate.Include(&fullBounds);
 		}
-		atomic_add(&fPendingInvalidations, 1);
+		atomic_add_compat(&fPendingInvalidations, 1);
 		_SchedulePresent();
 	}
 }
@@ -578,7 +607,7 @@ HWInterface::_SchedulePresent()
 	if (fPresentSemaphore < 0)
 		return;
 
-	if (atomic_test_and_set(&fPresentScheduled, 1, 0) == 0)
+	if (atomic_test_and_set_compat(&fPresentScheduled, 1, 0) == 0)
 		release_sem(fPresentSemaphore);
 }
 
@@ -621,8 +650,8 @@ HWInterface::_ProcessPendingInvalidate()
 	bigtime_t presentTime = fPresentQueue->PresentNext(*this, true);
 	UnlockExclusiveAccess();
 
-	int32 invalidations = atomic_get(&fPendingInvalidations);
-	atomic_set(&fPendingInvalidations, 0);
+	int32 invalidations = atomic_get_compat(&fPendingInvalidations);
+	atomic_set_compat(&fPendingInvalidations, 0);
 
 	fCompositorFrameCounter++;
 	if (options.logTimings && fCompositorLogEveryN > 0
@@ -662,19 +691,20 @@ status_t
 HWInterface::_PresentThreadEntry(void* data)
 {
 	HWInterface* interface = static_cast<HWInterface*>(data);
-	while (atomic_get(&interface->fPresentThreadRunning) != 0) {
+	while (atomic_get_compat(&interface->fPresentThreadRunning) != 0) {
 		status_t status = acquire_sem(interface->fPresentSemaphore);
 		if (status != B_OK
-			|| atomic_get(&interface->fPresentThreadRunning) == 0) {
+			|| atomic_get_compat(&interface->fPresentThreadRunning) == 0) {
 			continue;
 		}
 
-		while (atomic_get(&interface->fPresentThreadRunning) != 0) {
+		while (atomic_get_compat(&interface->fPresentThreadRunning) != 0) {
 			snooze(2000);
 			interface->_ProcessPendingInvalidate();
 			if (!interface->_HasPendingInvalidate()) {
-				atomic_set(&interface->fPresentScheduled, 0);
-				break;
+				atomic_set_compat(&interface->fPresentScheduled, 0);
+				if (!interface->_HasPendingInvalidate())
+					break;
 			}
 		}
 	}
@@ -844,7 +874,16 @@ HWInterface::_DrawCursor(IntRect area) const
 	if (!backBuffer || !area.IsValid())
 		return;
 
-	IntRect cf = _CursorFrame();
+	ServerCursorReference cursor;
+	IntRect cf;
+	if (fFloatingOverlaysLock.Lock()) {
+		cursor = fCursorAndDragBitmap;
+		cf = _CursorFrame();
+		fFloatingOverlaysLock.Unlock();
+	}
+
+	if (!cursor)
+		return;
 
 	// make sure we don't copy out of bounds
 	area = backBuffer->Bounds() & area;
@@ -872,8 +911,8 @@ HWInterface::_DrawCursor(IntRect area) const
 		src += area.top * srcBPR + area.left * 4;
 
 		// offset into cursor bitmap
-		uint8* crs = (uint8*)fCursorAndDragBitmap->Bits();
-		uint32 crsBPR = fCursorAndDragBitmap->BytesPerRow();
+		uint8* crs = (uint8*)cursor->Bits();
+		uint32 crsBPR = cursor->BytesPerRow();
 		// since area is clipped to cf,
 		// the diff between area.top and cf.top is always positive,
 		// same for diff between area.left and cf.left
