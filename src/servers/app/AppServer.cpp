@@ -145,16 +145,29 @@ AppServer::MessageReceived(BMessage* message)
 
 		case AS_INTERNAL_SET_WINDOW_ALPHA:
 		{
+			// Per-window alpha override entrypoint used by internal tooling.
+			// Dispatch through Desktop to reuse window-locking/ownership checks.
 			int32 windowToken = message->GetInt32("window", B_NULL_TOKEN);
 			float alpha = message->GetFloat("alpha", 1.0f);
 
-			BAutolock tokenLocker(BPrivate::gDefaultTokens);
-			ServerWindow* window = NULL;
-			if (windowToken != B_NULL_TOKEN
-				&& BPrivate::gDefaultTokens.GetToken(windowToken,
-					B_SERVER_TOKEN, (void**)&window) == B_OK
-				&& window != NULL) {
-				window->SetAlpha(alpha);
+			if (windowToken != B_NULL_TOKEN) {
+				BAutolock locker(fDesktopLock);
+				for (int32 i = 0; i < fDesktops.CountItems(); i++) {
+					Desktop* desktop = fDesktops.ItemAt(i);
+					if (desktop != NULL && desktop->SetWindowAlpha(windowToken, alpha))
+						break;
+				}
+			}
+			break;
+		}
+
+		case AS_INTERNAL_SET_ALPHA_DEBUG:
+		{
+			// Global alpha-debug switch propagated to all desktops/windows.
+			bool enabled = message->GetBool("enabled", false);
+			if (enabled != fAlphaDebugEnabled) {
+				fAlphaDebugEnabled = enabled;
+				_ApplyAlphaDebugSetting(enabled);
 			}
 			break;
 		}
@@ -304,7 +317,7 @@ AppServer::_LoadCompositorSettings()
 		return status;
 
 	status = create_directory(path.Path(), 0755);
-	if (status < B_OK)
+	if (status < B_OK && status != B_FILE_EXISTS)
 		return status;
 
 	return path.Append("alpha_debug");
@@ -374,7 +387,7 @@ AppServer::_CompositorDebugSettingsPath(BPath& path) const
 		return status;
 
 	status = create_directory(path.Path(), 0755);
-	if (status < B_OK)
+	if (status < B_OK && status != B_FILE_EXISTS)
 		return status;
 
 	return path.Append("compositor_debug");
@@ -482,6 +495,10 @@ AppServer::_CreateDesktop(uid_t userID, const char* targetScreen)
 		status_t status = desktop->Init();
 		if (status == B_OK)
 			status = desktop->Run();
+		// Apply current global debug state to new desktops at creation time so
+		// they don't wait for the periodic settings poll to match server state.
+		if (status == B_OK)
+			desktop->SetAlphaDebugEnabled(fAlphaDebugEnabled);
 		if (status == B_OK)
 			desktop->SetCompositorDebugOptions(fCompositorDebugOptions);
 		if (status == B_OK && !fDesktops.AddItem(desktop.Get()))

@@ -7,7 +7,11 @@
 #include <File.h>
 #include <FindDirectory.h>
 #include <Message.h>
+#include <Messenger.h>
+#include <Application.h>
 #include <Path.h>
+
+#include <private/app/ServerProtocol.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -24,6 +28,7 @@ print_usage(const char* name)
 static status_t
 get_alpha_debug_settings_path(BPath& path)
 {
+	// Persisted app_server debug settings path shared with Appearance prefs.
 	status_t status = find_directory(B_USER_SETTINGS_DIRECTORY, &path);
 	if (status != B_OK)
 		return status;
@@ -33,7 +38,7 @@ get_alpha_debug_settings_path(BPath& path)
 		return status;
 
 	status = create_directory(path.Path(), 0755);
-	if (status != B_OK)
+	if (status != B_OK && status != B_FILE_EXISTS)
 		return status;
 
 	return path.Append("alpha_debug");
@@ -81,6 +86,15 @@ main(int argc, char** argv)
 	if (status != B_OK) {
 		fprintf(stderr, "failed to write settings: %s\n",
 			strerror(status));
+		return 1;
+	}
+
+	BApplication app("application/x-vnd.Haiku-setalphadebug");
+	BMessenger messenger("application/x-vnd.Haiku-app_server");
+	// Send a live update so users don't have to wait for poll/mtime checks.
+	settings.what = AS_INTERNAL_SET_ALPHA_DEBUG;
+	if (!messenger.IsValid() || messenger.SendMessage(&settings) != B_OK) {
+		fprintf(stderr, "warning: failed to notify app_server live\n");
 		return 1;
 	}
 
