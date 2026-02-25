@@ -179,39 +179,6 @@ Compositor::Compose(RenderingBuffer& dst, RenderingBuffer& src,
 	return stats;
 }
 
-
-void
-Compositor::_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
-	const rgb_color& background) const
-{
-	if (dst.ColorSpace() != B_RGBA32 && dst.ColorSpace() != B_RGB32)
-		return;
-
-	uint32 color = (uint32(255) << 24)
-		| (uint32(background.red) << 16)
-		| (uint32(background.green) << 8)
-		| uint32(background.blue);
-
-	uint8* dstBits = (uint8*)dst.Bits();
-	uint32 dstBPR = dst.BytesPerRow();
-
-	int32 count = dirty.CountRects();
-	for (int32 i = 0; i < count; i++) {
-		BRect rect = dirty.RectAt(i);
-		int32 left = (int32)rect.left;
-		int32 right = (int32)rect.right;
-		int32 top = (int32)rect.top;
-		int32 bottom = (int32)rect.bottom;
-		int32 width = right - left + 1;
-
-		for (int32 y = top; y <= bottom; y++) {
-			uint32* dstRow = (uint32*)(dstBits + y * dstBPR + left * 4);
-			for (int32 x = 0; x < width; x++)
-				dstRow[x] = color;
-		}
-	}
-}
-
 void
 Compositor::_BlurRegion(RenderingBuffer& dst, const BRegion& region,
 	uint8 radius, int64& _pixelCount, bigtime_t& _elapsed) const
@@ -671,6 +638,7 @@ Compositor::_DrawText(RenderingBuffer& dst, int32 x, int32 y,
 }
 
 
+/*
 void
 Compositor::_DrawDebugOverlay(RenderingBuffer& dst, const BRegion& dirty,
 	const std::vector<WindowSnapshot>& snapshots, ComposeStats& stats) const
@@ -694,6 +662,7 @@ Compositor::_DrawDebugOverlay(RenderingBuffer& dst, const BRegion& dirty,
 		stats.blurCacheHits, stats.blurCacheMisses, stats.blurTime);
 	_DrawText(dst, 8, 8, text.String(), textColor, stats.overlayRects);
 }
+
 
 void
 Compositor::_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
@@ -736,7 +705,7 @@ Compositor::_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
 	}
 	// Placeholder for text drawing
 }
-
+*/
 
 void
 Compositor::_CopyRegion(RenderingBuffer& dst, RenderingBuffer& src,

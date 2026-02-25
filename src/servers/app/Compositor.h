@@ -56,6 +56,7 @@ struct ComposeStats {
 	int32			cacheHits;
 	int32			cacheMisses;
 	bigtime_t		composeTime;
+	bigtime_t		blurTime;
 };
 
 class Compositor {

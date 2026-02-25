@@ -33,6 +33,7 @@
 
 using std::nothrow;
 
+/*
 namespace {
 
 static void
@@ -67,6 +68,7 @@ _AppendStressReplayRegions(const BRegion& base, const IntRect& bounds,
 }
 
 } // namespace
+*/
 
 
 static inline int32
@@ -614,7 +616,9 @@ HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 {
 	fWindowSnapshots = snapshots;
 	fCompositorBackground = background;
-	fCompositorDebugOptions = options;
+	fCompositorDebugOptions.showOverlay = fCompositorShowOverlay;
+	fCompositorDebugOptions.logTimings = fCompositorLogTimings;
+	fCompositorDebugOptions.stressInvalidate = fCompositorStressInvalidate;
 
 	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
 		RenderingBuffer* buffer = DrawingBuffer();
@@ -826,9 +830,9 @@ HWInterface::_ProcessPendingInvalidate()
 	if (showOverlay && stats.overlayRects.CountRects() > 0)
 		pending.Include(&stats.overlayRects);
 
-		fPresentQueue->Submit(target, replayRegions[i]);
-		presentTime += fPresentQueue->PresentNext(*this, true);
-	}
+	fPresentQueue->Submit(renderTarget, pending);
+	bigtime_t presentTime = fPresentQueue->PresentNext(*this, true);
+
 	PresentQueue::PressureMetrics pressure = fPresentQueue->GetPressureMetrics();
 	UnlockExclusiveAccess();
 
@@ -941,6 +945,7 @@ HWInterface::_PresentThreadEntry(void* data)
 			if (atomic_test_and_set_compat(&interface->fPresentScheduled, 1, 0)
 				!= 0) {
 				break;
+			}
 
 			// New invalidations arrived while processing. Re-arm the scheduled
 			// state so producers won't skip the semaphore release.

@@ -18,10 +18,10 @@ PresentQueue::PresentQueue(int32 width, int32 height, color_space format)
 	fRenderIndex(0),
 	fReadyIndex(-1),
 	fBufferCount(0),
+	fLogLevel(0),
 	fAcquireReuseCount(0),
 	fReadyOverwriteCount(0),
 	fUnknownSubmitCount(0),
-	fLogLevel(0),
 	fLock("present queue lock")
 {
 	_AllocateBuffers(width, height, format);

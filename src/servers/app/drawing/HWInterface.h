@@ -280,6 +280,8 @@ protected:
 			std::vector<WindowSnapshot>
 								fWindowSnapshots;
 			rgb_color			fCompositorBackground;
+			int64				fCompositorFrameCounter;
+			int64				fCompositorLogEveryN;
 			int64				fCompositorComposeAccum;
 			int32				fCompositorComposeCount;
 			bool				fCompositorAnimActive;
