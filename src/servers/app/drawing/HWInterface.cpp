@@ -33,7 +33,8 @@
 
 using std::nothrow;
 
-/*
+
+
 namespace {
 
 static void
@@ -68,7 +69,7 @@ _AppendStressReplayRegions(const BRegion& base, const IntRect& bounds,
 }
 
 } // namespace
-*/
+
 
 
 static inline int32
@@ -825,6 +826,15 @@ HWInterface::_ProcessPendingInvalidate()
 		return;
 	}
 
+	if (stressInvalidate) {
+		std::vector<BRegion> replayRegions;
+		replayRegions.reserve(3);
+		_AppendStressReplayRegions(pending, source->Bounds(),
+			fCompositorFrameCounter, replayRegions);
+		for (size_t i = 0; i < replayRegions.size(); i++)
+			pending.Include(&replayRegions[i]);
+	}
+
 	ComposeStats stats = fCompositor->Compose(*renderTarget, *source,
 		pending, snapshots, background);
 	if (showOverlay && stats.overlayRects.CountRects() > 0)
@@ -859,7 +869,7 @@ HWInterface::_ProcessPendingInvalidate()
 	if (stressInvalidate && (fCompositorFrameCounter % 60) == 0)
 		shouldLog = true;
 
-	if (shouldLog) {
+/* 	if (shouldLog) {
 		int64 avgCompose = fCompositorComposeCount > 0
 			? fCompositorComposeAccum / fCompositorComposeCount
 			: 0;
@@ -867,40 +877,28 @@ HWInterface::_ProcessPendingInvalidate()
 			" invalidations=%" B_PRId32 " dirtyRects=%" B_PRId32
 			" dirtyPixels=%" B_PRId64 " windows=%" B_PRId32
 			" copy=%" B_PRId32 " blend=%" B_PRId32
-			" alpha=%" B_PRId32 " blurred=%" B_PRId32
-			" blurPixels=%" B_PRId64 " blurTime=%" B_PRId64 "us"
-			" cache(h/m)=%" B_PRId32 "/%" B_PRId32
-			" queue(reuse/overwrite/unknown)=%" B_PRId64 "/%" B_PRId64
-			"/%" B_PRId64
-			" compose=%" B_PRId64 "us"
-			" present=%" B_PRId64 "us\n",
-			fCompositorFrameCounter, invalidations, stats.dirtyRects,
-			stats.dirtyPixels, stats.windowsComposed,
-			stats.copyPathWindows, stats.blendPathWindows,
-			stats.alphaWindows,
-			stats.blurredWindows, stats.blurredPixels, stats.blurTime,
-			stats.cacheHits, stats.cacheMisses,
-			pressure.acquireReuseCount, pressure.readyOverwriteCount,
-			pressure.unknownSubmitCount,
-			stats.composeTime, presentTime,
 			" alpha=%" B_PRId32 " animating=%" B_PRId32
 			" blurred=%" B_PRId32 " blurPixels=%" B_PRId64
 			" blurHits=%" B_PRId32 " blurMisses=%" B_PRId32
-			" blurTime=%" B_PRId64 "us compose=%" B_PRId64
-			"us avgCompose=%" B_PRId64 "us present=%" B_PRId64
-			"us pendingRects=%" B_PRId32 " pendingDirty=%" B_PRId32
-			" buffering=%s vsync=%s\n",
+			" blurTime=%" B_PRId64 "us compose=%" B_PRId64 "us"
+			" avgCompose=%" B_PRId64 "us present=%" B_PRId64 "us"
+			" pendingRects=%" B_PRId32 " pendingDirty=%" B_PRId32
+			" queue(reuse/overwrite/unknown)=%" B_PRId64 "/%" B_PRId64
+			"/%" B_PRId64 " buffering=%s\n",
 			fCompositorFrameCounter, invalidations, stats.dirtyRects,
-			stats.dirtyPixels, stats.windowsComposed, stats.alphaWindows,
-			animatingWindows, stats.blurredWindows, stats.blurredPixels,
+			stats.dirtyPixels, stats.windowsComposed,
+			stats.copyPathWindows, stats.blendPathWindows,
+			stats.alphaWindows, animatingWindows,
+			stats.blurredWindows, stats.blurredPixels,
 			stats.blurCacheHits, stats.blurCacheMisses, stats.blurTime,
 			stats.composeTime, avgCompose, presentTime,
 			pending.CountRects(), pendingDirtyRects,
-			fPresentQueue.IsSet() ? "intermediate" : "frontbuffer",
-			"runtime");
+			pressure.acquireReuseCount, pressure.readyOverwriteCount,
+			pressure.unknownSubmitCount,
+			fPresentQueue.IsSet() ? "intermediate" : "frontbuffer");
 		fCompositorComposeAccum = 0;
 		fCompositorComposeCount = 0;
-	}
+	} */
 
 	fPresentCounter++;
 	now = system_time();
@@ -937,8 +935,10 @@ HWInterface::_PresentThreadEntry(void* data)
 			// Mark scheduling slot as free. If new work arrived while composing,
 			// re-arm before leaving the loop so producers don't miss a wakeup.
 			atomic_set_compat(&interface->fPresentScheduled, 0);
-			if (!interface->_HasPendingInvalidate())
+			if (!interface->_HasPendingInvalidate()
+				&& !interface->fCompositorAnimActive) {
 				break;
+			}
 
 			// New invalidations arrived while processing. Re-arm the scheduled
 			// state so producers won't skip the semaphore release.
@@ -947,10 +947,6 @@ HWInterface::_PresentThreadEntry(void* data)
 				break;
 			}
 
-			// New invalidations arrived while processing. Re-arm the scheduled
-			// state so producers won't skip the semaphore release.
-			if (atomic_test_and_set(&interface->fPresentScheduled, 1, 0) != 0)
-				break;
 			bool animationsEnabled = false;
 			int32 targetFps = 60;
 			{
