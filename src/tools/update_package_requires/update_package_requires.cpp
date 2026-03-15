@@ -114,19 +114,24 @@ main(int argc, const char* const* argv)
 	// create a map for all provides (name -> resolvable list)
 	typedef std::map<BString, ProvidesList> ProvidesMap;
 
+	struct ProvidesCollector {
+		static bool Callback(void* context, const BPackageInfo& info)
+		{
+			ProvidesMap* providesMap = (ProvidesMap*)context;
+			const BObjectList<BPackageResolvable, true>& provides = info.ProvidesList();
+			int32 count = provides.CountItems();
+			for (int32 i = 0; i < count; i++) {
+				BPackageResolvable* resolvable = provides.ItemAt(i);
+				ProvidesList& providesList = (*providesMap)[resolvable->Name()];
+				providesList.push_back(*resolvable);
+			}
+			return true;
+		}
+	};
+
 	ProvidesMap providesMap;
 
-	repositoryCache.GetPackageInfos([](void* context, const BPackageInfo& info) -> bool {
-		ProvidesMap* providesMap = (ProvidesMap*)context;
-		const BObjectList<BPackageResolvable, true>& provides = info.ProvidesList();
-		int32 count = provides.CountItems();
-		for (int32 i = 0; i < count; i++) {
-			BPackageResolvable* resolvable = provides.ItemAt(i);
-			ProvidesList& providesList = (*providesMap)[resolvable->Name()];
-			providesList.push_back(*resolvable);
-		}
-		return true;
-	}, &providesMap);
+	repositoryCache.GetPackageInfos(&ProvidesCollector::Callback, &providesMap);
 
 	// load the package info
 	BPackageInfo packageInfo;

@@ -66,6 +66,7 @@
 #include "DrawState.h"
 #include "HWInterface.h"
 #include "Layer.h"
+#include "MallocBuffer.h"
 #include "Overlay.h"
 #include "ProfileMessageSupport.h"
 #include "RenderingBuffer.h"
@@ -2512,6 +2513,21 @@ ServerWindow::_DispatchViewDrawingMessage(int32 code,
 	}
 
 	_UpdateCurrentDrawingRegion();
+
+	// TRAP 4: Redirection Missing
+	if (fWindow->DrawingBuffer() == NULL) {
+		// If we are in Phase 3, this should NEVER be null for a visible window.
+		debug_printf("STAGE 8 CRITICAL: Window %s thread attempting to draw without a Private Buffer!\n", Title());
+		debugger("STAGE 8 CRITICAL: Window thread attempting to draw without a Private Buffer!");
+	}
+
+	// TRAP 5: Target Mismatch
+	if (drawingEngine->Target() != fWindow->DrawingBuffer()) {
+		debug_printf("STAGE 8 CRITICAL: DrawingEngine target %p out of sync with Window %s Private Buffer %p!\n",
+			drawingEngine->Target(), Title(), fWindow->DrawingBuffer());
+		debugger("STAGE 8 CRITICAL: DrawingEngine target out of sync with Window Private Buffer!");
+	}
+
 	if (fCurrentDrawingRegion.CountRects() <= 0 && code != AS_VIEW_END_LAYER) {
 			// If the command is AS_VIEW_END_LAYER, then we continue even if
 			// the clipping region is empty. The layer itself might set a valid
@@ -4421,10 +4437,51 @@ Window*
 ServerWindow::MakeWindow(BRect frame, const char* name,
 	window_look look, window_feel feel, uint32 flags, uint32 workspace)
 {
-	// The non-offscreen ServerWindow uses the DrawingEngine instance from
-	// the desktop.
-	return new(std::nothrow) ::Window(frame, name, look, feel, flags,
-		workspace, this, fDesktop->HWInterface()->CreateDrawingEngine());
+	DrawingEngine* drawingEngine = fDesktop->HWInterface()->CreateDrawingEngine();
+	::Window* newWindow = new(std::nothrow) ::Window(frame, name, look, feel, flags,
+		workspace, this, drawingEngine);
+	if (newWindow == NULL) {
+		delete drawingEngine;
+		return NULL;
+	}
+
+	// Phase 3: Allocate a private buffer for this window to allow true 
+	// overlapping translucency.
+	// Decorator footprint is used to size the buffer.
+	BRegion footprint;
+	newWindow->GetFullRegion(&footprint);
+	BRect bounds = footprint.Frame();
+	if (bounds.IsValid()) {
+		CompositorBuffer* buffer = new(std::nothrow) CompositorBuffer(
+			(int32)bounds.Width() + 1, (int32)bounds.Height() + 1);
+		
+		// TRAP 1: Allocation Failure
+		if (buffer == NULL) {
+			debug_printf("STAGE 8 CRITICAL: Failed to allocate CompositorBuffer for window %s\n", name);
+			debugger("STAGE 8 CRITICAL: Failed to allocate CompositorBuffer");
+		}
+		
+		// TRAP 2: Initialization Failure
+		if (buffer->InitCheck() != B_OK) {
+			debug_printf("STAGE 8 CRITICAL: MallocBuffer InitCheck failed for window %s\n", name);
+			debugger("STAGE 8 CRITICAL: MallocBuffer InitCheck failed. Memory exhausted?");
+		}
+
+		// TRAP 3: Zero-Dimension Sanity
+		if (buffer->Buffer()->Width() == 0 || buffer->Buffer()->Height() == 0) {
+			debug_printf("STAGE 8 CRITICAL: Attempted to create a 0-sized buffer for window %s (%dx%d)\n",
+				name, (int)buffer->Buffer()->Width(), (int)buffer->Buffer()->Height());
+			debugger("STAGE 8 CRITICAL: Attempted to create a 0-sized buffer. Check footprint logic.");
+		}
+
+		newWindow->SetDrawingBuffer(buffer);
+		drawingEngine->SetTarget(buffer->Buffer());
+		// We offset the renderer because the window draws in local 
+		// coordinates relative to the buffer origin.
+		drawingEngine->SetRendererOffset((int32)bounds.left, (int32)bounds.top);
+	}
+
+	return newWindow;
 }
 
 
@@ -4435,6 +4492,15 @@ ServerWindow::HandleDirectConnection(int32 bufferState, int32 driverState)
 
 	if (!fDirectWindowInfo.IsSet())
 		return;
+
+	// Stage 8: Temporarily disable direct access if compositor is enabled.
+	// BDirectWindow apps draw to the hardware buffer, which conflicts with 
+	// the compositor's intermediate buffering and PresentQueue.
+	// We force a B_DIRECT_STOP to make the app fall back to standard drawing.
+	bool compositorEnabled = fDesktop->HWInterface()->IsCompositorEnabled();
+	if (compositorEnabled) {
+		bufferState = (bufferState & ~B_DIRECT_MODE_MASK) | B_DIRECT_STOP;
+	}
 
 	STRACE(("HandleDirectConnection(bufferState = %" B_PRId32 ", driverState = "
 		"%" B_PRId32 ")\n", bufferState, driverState));
@@ -4455,10 +4521,12 @@ ServerWindow::HandleDirectConnection(int32 bufferState, int32 driverState)
 		// within the given timeout. Or something else went wrong.
 		// Deleting this member should make it crash.
 		fDirectWindowInfo.Unset();
-	} else if ((bufferState & B_DIRECT_MODE_MASK) == B_DIRECT_START)
-		fIsDirectlyAccessing = true;
-	else if ((bufferState & B_DIRECT_MODE_MASK) == B_DIRECT_STOP)
-		fIsDirectlyAccessing = false;
+	} else {
+		if ((bufferState & B_DIRECT_MODE_MASK) == B_DIRECT_START)
+			fIsDirectlyAccessing = true;
+		else if ((bufferState & B_DIRECT_MODE_MASK) == B_DIRECT_STOP)
+			fIsDirectlyAccessing = false;
+	}
 }
 
 

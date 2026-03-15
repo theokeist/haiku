@@ -2,6 +2,9 @@ SubDir HAIKU_TOP src tools update_package_requires ;
 
 UsePrivateBuildHeaders shared ;
 
+# Set C++11 standard for this directory
+SubDirCcFlags -std=c++11 ;
+
 USES_BE_API on <build>update_package_requires = true ;
 
 BuildPlatformMain <build>update_package_requires :

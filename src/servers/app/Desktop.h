@@ -335,7 +335,12 @@ private:
 				bool	blurEnabled;
 				float	blurRadius;
 				BRect	blurRect;
+				float	shadowRadius;
+				BPoint	shadowOffset;
+				float	shadowOpacity;
 			};
+			void				_AddShadowRegion(Window* window,
+									BRegion& region) const;
 			CompositorEffectState	_ResolveEffectState(Window* window,
 								bigtime_t now) const;
 			void				_SetBackground(BRegion& background);

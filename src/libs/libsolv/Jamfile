@@ -1,15 +1,17 @@
 SubDir HAIKU_TOP src libs libsolv ;
 
-DEFINES =
-	LIBSOLV_INTERNAL
-	HAIKU
-	_GNU_SOURCE
-
-	HAVE_STRCHRNUL
-	HAVE_FOPENCOOKIE
+local defines =
+	-DLIBSOLV_INTERNAL
+	-DHAIKU
+	-D_GNU_SOURCE
+	-DHAVE_FOPENCOOKIE
 	;
 
-SubDirCcFlags -Wno-sign-compare -Wno-missing-prototypes ;
+if $(HOST_PLATFORM) != "darwin" {
+	defines += -DHAVE_STRCHRNUL ;
+}
+
+SubDirCcFlags $(defines) -Wno-sign-compare -Wno-missing-prototypes ;
 
 local architectureObject ;
 for architectureObject in [ MultiArchSubDirSetup ] {

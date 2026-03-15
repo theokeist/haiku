@@ -13,30 +13,82 @@
 
 class Window;
 #include "CompositorDebugOptions.h"
+#include "TileDamageTracker.h"
+#include "CompositorBuffer.h"
 
 class RenderingBuffer;
 
-// Metadata placeholder for future retained-surface lifecycle management.
-// This is intentionally non-functional for now; it allows plumbing stable
-// identifiers through snapshot flow without changing current rendering output.
+// Metadata for retained-surface lifecycle management.
 struct RetainedSurfaceMetadata {
 	int32			surfaceToken;
-	uint64			surfaceGeneration;
+	int32			surfaceGeneration;
 	int32			lastKnownDamageRects;
 	bool			valid;
 };
 
-// Snapshot of window state consumed by compositor for a compose pass.
+// Represents a compositable layer of content.
+struct Surface {
+	BReference<CompositorBuffer> bufferRef;
+	RenderingBuffer*	buffer;      // Source pixels (cached from bufferRef)
+	BRect				bounds;      // Position in global screen space
+	BPoint				translation; // Dynamic offset for movement
+	float				alpha;       // Global opacity (0.0 to 1.0)
+	bool				isOpaque;    // true if alpha == 1.0 and content is fully opaque
+	int32				zOrder;      // Depth (higher is on top)
+	
+	// Damage/Visibility
+	BRegion				damage;      // Calculated target region for this pass
+	BRegion				opaqueRegion;// Area that occludes layers below
+	bool				skipDrawing; // true for occluders like direct windows
+	
+	// Metadata for caching and effects
+	uint32				surfaceToken;// Unique ID for this surface
+	int32				bufferGeneration; // Content version
+	bool				contentChanged;   // true if buffer changed since last pass
+	
+	bool				blurEnabled;
+	float				blurRadius;
+	BRect				blurRect;
+	
+	// Shadow properties
+	float				shadowRadius;
+	BPoint				shadowOffset;
+	float				shadowOpacity;
+
+	// Tile coordinates (Stage 8)
+	int32				tileX0;
+	int32				tileY0;
+	int32				tileX1;
+	int32				tileY1;
+};
+
+typedef std::vector<Surface> SurfaceList;
+
+// Snapshot of window state used by SurfaceManager to build Surface objects.
 struct WindowSnapshot {
 	BRegion			visible;
+	BPoint			translation;
 	float			alpha;
 	bool			opaqueFastPath;
 	bool			animActive;
 	bool			blurEnabled;
 	float			blurRadius;
 	BRect			blurRect;
-	Window*			window;
 	bool			blurBehind;
+	int32			bufferGeneration;
+	
+	BRect			fullFootprintFrame;
+	BRect			contentFrame;
+	BReference<CompositorBuffer> buffer;
+	uint32			serverToken;
+
+	// Shadow properties
+	float			shadowRadius;
+	BPoint			shadowOffset;
+	float			shadowOpacity;
+
+	bool			isDirect; // true if window is in BDirectWindow mode
+
 	RetainedSurfaceMetadata	retained;
 };
 
@@ -62,68 +114,69 @@ struct ComposeStats {
 class Compositor {
 public:
 				Compositor();
+				~Compositor();
 	void			SetLogLevel(int32 logLevel);
 	void			SetDebugOptions(bool showOverlay, bool logTimings,
 						bool stressInvalidate);
-	ComposeStats	Compose(RenderingBuffer& dst, RenderingBuffer& src,
+	void			Compose(RenderingBuffer& dst, RenderingBuffer& backbuffer,
 						const BRegion& dirty,
-						const std::vector<WindowSnapshot>& snapshots,
-						const rgb_color& background) const;
+						const SurfaceList& surfaces,
+						const rgb_color& background,
+						bool trueShadows = false);
+
+	void			ComposeTileGrid(RenderingBuffer& dst,
+						RenderingBuffer& backbuffer,
+						const SurfaceList& surfaces,
+						TileDamageTracker* tracker,
+						const rgb_color& background);
 
 private:
 	struct BlurCacheEntry {
 		BlurCacheEntry();
+		~BlurCacheEntry();
 
-		Window*			window;
+		uint32			surfaceToken;
 		BRect			rect;
-		std::vector<uint32>
-						pixels;
-		int64			generation;
+		int32*			pixels;
+		int32			generation;
 		int32			width;
 		int32			height;
 		int32			radius;
+		RenderingBuffer* buffer;
 	};
 
-	ComposeStats	Compose(RenderingBuffer& dst, RenderingBuffer& src,
-						const BRegion& dirty,
-						const std::vector<WindowSnapshot>& snapshots,
-						const rgb_color& background,
-						const CompositorDebugOptions& options) const;
+	struct ShadowCacheEntry {
+		ShadowCacheEntry();
+
+		uint32			surfaceToken;
+		int32			bufferGeneration;
+		float			radius;
+		int32			width;
+		int32			height;
+		std::vector<uint8>
+						mask;
+	};
+
+	void			_ComposeSingleTile(RenderingBuffer& dst,
+						RenderingBuffer& backbuffer,
+						int32 tx, int32 ty, const SurfaceList& surfaces,
+						const rgb_color& background);
 
 private:
-	void			_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
-						const rgb_color& background) const;
-	void			_CopyRegion(RenderingBuffer& dst, RenderingBuffer& src,
-						const BRegion& region) const;
-	void			_BlendRegion(RenderingBuffer& dst, RenderingBuffer& src,
-						const BRegion& region, float alpha) const;
-	void			_BlurRegionCached(RenderingBuffer& dst, const BRect& rect,
-						Window* window, bool backgroundChanged,
-						int32 radius, ComposeStats& stats) const;
-	void			_BlurRegion(RenderingBuffer& dst, const BRect& rect,
-						std::vector<uint32>& output, int32 radius) const;
-	void			_DrawDebugOverlay(RenderingBuffer& dst, const BRegion& dirty,
-						const std::vector<WindowSnapshot>& snapshots,
-						ComposeStats& stats) const;
-	void			_DrawRectOutline(RenderingBuffer& dst, const BRect& rect,
-						uint32 color, BRegion& overlayRects) const;
-	void			_DrawText(RenderingBuffer& dst, int32 x, int32 y,
-						const char* text, uint32 color,
-						BRegion& overlayRects) const;
+	void					_ClearRegion(RenderingBuffer& dst, const BRegion& dirty,
+											const rgb_color& background);
+	void					_ClearRegion(RenderingBuffer& dst, const BRect& rect,
+											const rgb_color& background);
+	void			_CopyRegionTranslated(RenderingBuffer& dst, RenderingBuffer& src,
+						const BRegion& region, const BPoint& translation);
+	void			_BlendRegionTranslated(RenderingBuffer& dst, RenderingBuffer& src,
+						const BRegion& region, float alpha,
+						const BPoint& translation);
 
-	mutable std::vector<BlurCacheEntry>
-						fBlurCache;
-	mutable int64		fBackgroundGeneration;
 	int32				fLogLevel;
 	bool				fShowOverlay;
 	bool				fLogTimings;
 	bool				fStressInvalidate;
-	mutable bool		fLoggedSnapshotOrder;
-	void			_BlurRegion(RenderingBuffer& dst, const BRegion& region,
-						uint8 radius, int64& _pixelCount,
-						bigtime_t& _elapsed) const;
-	void			_DrawOverlay(RenderingBuffer& dst, const BRegion& dirty,
-						const BRegion& blurRegion) const;
 };
 
 #endif // COMPOSITOR_H

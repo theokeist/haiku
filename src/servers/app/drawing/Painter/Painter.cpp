@@ -218,6 +218,9 @@ Painter::Painter()
 	fMiterLimit(B_DEFAULT_MITER_LIMIT),
 
 	fPatternHandler(),
+	fAttachedBuffer(NULL),
+	fRendererOffsetX(0),
+	fRendererOffsetY(0),
 	fTextRenderer(fSubpixRenderer, fRenderer, fRendererBin, fUnpackedScanline,
 		fSubpixUnpackedScanline, fSubpixRasterizer, fMaskedUnpackedScanline,
 		fTransform),
@@ -253,9 +256,25 @@ Painter::AttachToBuffer(RenderingBuffer* buffer)
 		// (if ever we want to support some devices where this gives
 		// a great speed up, right now it seems fine, even in emulation)
 
+		// TRAP 7: Stride Integrity
+		uint32 expectedStride = buffer->Width() * 4;
+		if (buffer->BytesPerRow() < expectedStride) {
+			debug_printf("STAGE 8 CRITICAL: Stride mismatch! Width=%u BPR=%u expected=%u. Painter will overflow buffer rows.\n",
+				(unsigned)buffer->Width(), (unsigned)buffer->BytesPerRow(), (unsigned)expectedStride);
+			debugger("STAGE 8 CRITICAL: Stride mismatch! Painter will overflow buffer rows.");
+		}
+
+		// TRAP 8: Memory Pointer Sanity
+		if (buffer->Bits() == NULL) {
+			debug_printf("STAGE 8 CRITICAL: Attached to buffer with NULL bits! Width=%u Height=%u\n",
+				(unsigned)buffer->Width(), (unsigned)buffer->Height());
+			debugger("STAGE 8 CRITICAL: Attached to buffer with NULL bits.");
+		}
+
 		fBuffer.attach((uint8*)buffer->Bits(),
 			buffer->Width(), buffer->Height(), buffer->BytesPerRow());
 
+		fAttachedBuffer = buffer;
 		fAttached = true;
 		fValidClipping = fClippingRegion != NULL
 			&& fClippingRegion->Frame().IsValid();
@@ -273,6 +292,7 @@ void
 Painter::DetachFromBuffer()
 {
 	fBuffer.attach(NULL, 0, 0, 0);
+	fAttachedBuffer = NULL;
 	fAttached = false;
 	fValidClipping = false;
 }
@@ -612,33 +632,59 @@ Painter::StrokeLine(BPoint a, BPoint b, const BGradient& gradient)
 bool
 Painter::StraightLine(BPoint a, BPoint b, const rgb_color& c) const
 {
-	if (!fValidClipping)
+	if (!fValidClipping || !fAttached)
 		return false;
 
-	if (a.x == b.x) {
+	// 1. Convert to SIGNED local coordinates immediately
+	int32 x1 = (int32)a.x - fRendererOffsetX;
+	int32 y1 = (int32)a.y - fRendererOffsetY;
+	int32 x2 = (int32)b.x - fRendererOffsetX;
+	int32 y2 = (int32)b.y - fRendererOffsetY;
+
+	// 2. Physical Buffer Clipping (Early Exit)
+	int32 bufW = (int32)fBuffer.width();
+	int32 bufH = (int32)fBuffer.height();
+
+	if (x1 == x2) {
 		// vertical
-		uint8* dst = fBuffer.row_ptr(0);
-		uint32 bpr = fBuffer.stride();
-		int32 x = (int32)a.x;
-		dst += x * 4;
-		int32 y1 = (int32)min_c(a.y, b.y);
-		int32 y2 = (int32)max_c(a.y, b.y);
+		if (x1 < 0 || x1 >= bufW)
+			return true;
+
+		int32 top = min_c(y1, y2);
+		int32 bottom = max_c(y1, y2);
+		if (bottom < 0 || top >= bufH)
+			return true;
+
+		// Final clamp to buffer bounds
+		int32 localTop = max_c(0, top);
+		int32 localBottom = min_c(bufH - 1, bottom);
+
 		pixel32 color;
 		color.data8[0] = c.blue;
 		color.data8[1] = c.green;
 		color.data8[2] = c.red;
 		color.data8[3] = 255;
+
+		uint32 bpr = fBuffer.stride();
+
 		// draw a line, iterate over clipping boxes
 		fBaseRenderer.first_clip_box();
 		do {
-			if (fBaseRenderer.xmin() <= x &&
-				fBaseRenderer.xmax() >= x) {
-				int32 i = max_c(fBaseRenderer.ymin(), y1);
-				int32 end = min_c(fBaseRenderer.ymax(), y2);
-				uint8* handle = dst + i * bpr;
-				for (; i <= end; i++) {
-					*(uint32*)handle = color.data32;
-					handle += bpr;
+			// Get local clipping box
+			int32 clipLeft = fBaseRenderer.xmin() - fRendererOffsetX;
+			int32 clipRight = fBaseRenderer.xmax() - fRendererOffsetX;
+			int32 clipTop = fBaseRenderer.ymin() - fRendererOffsetY;
+			int32 clipBottom = fBaseRenderer.ymax() - fRendererOffsetY;
+
+			if (x1 >= clipLeft && x1 <= clipRight) {
+				int32 i = max_c(localTop, clipTop);
+				int32 end = min_c(localBottom, clipBottom);
+				if (i <= end) {
+					uint8* handle = fBuffer.row_ptr(i) + x1 * 4;
+					for (; i <= end; i++) {
+						*(uint32*)handle = color.data32;
+						handle += bpr;
+					}
 				}
 			}
 		} while (fBaseRenderer.next_clip_box());
@@ -646,30 +692,43 @@ Painter::StraightLine(BPoint a, BPoint b, const rgb_color& c) const
 		return true;
 	}
 
-	if (a.y == b.y) {
+	if (y1 == y2) {
 		// horizontal
-		int32 y = (int32)a.y;
-		if (y < 0 || y >= (int32)fBuffer.height())
+		if (y1 < 0 || y1 >= bufH)
 			return true;
 
-		uint8* dst = fBuffer.row_ptr(y);
-		int32 x1 = (int32)min_c(a.x, b.x);
-		int32 x2 = (int32)max_c(a.x, b.x);
+		int32 left = min_c(x1, x2);
+		int32 right = max_c(x1, x2);
+		if (right < 0 || left >= bufW)
+			return true;
+
+		// Final clamp to buffer bounds
+		int32 localLeft = max_c(0, left);
+		int32 localRight = min_c(bufW - 1, right);
+
 		pixel32 color;
 		color.data8[0] = c.blue;
 		color.data8[1] = c.green;
 		color.data8[2] = c.red;
 		color.data8[3] = 255;
+
 		// draw a line, iterate over clipping boxes
 		fBaseRenderer.first_clip_box();
 		do {
-			if (fBaseRenderer.ymin() <= y &&
-				fBaseRenderer.ymax() >= y) {
-				int32 i = max_c(fBaseRenderer.xmin(), x1);
-				int32 end = min_c(fBaseRenderer.xmax(), x2);
-				uint32* handle = (uint32*)(dst + i * 4);
-				for (; i <= end; i++) {
-					*handle++ = color.data32;
+			// Get local clipping box
+			int32 clipLeft = fBaseRenderer.xmin() - fRendererOffsetX;
+			int32 clipRight = fBaseRenderer.xmax() - fRendererOffsetX;
+			int32 clipTop = fBaseRenderer.ymin() - fRendererOffsetY;
+			int32 clipBottom = fBaseRenderer.ymax() - fRendererOffsetY;
+
+			if (y1 >= clipTop && y1 <= clipBottom) {
+				int32 i = max_c(localLeft, clipLeft);
+				int32 end = min_c(localRight, clipRight);
+				if (i <= end) {
+					uint32* handle = (uint32*)(fBuffer.row_ptr(y1) + i * 4);
+					for (; i <= end; i++) {
+						*handle++ = color.data32;
+					}
 				}
 			}
 		} while (fBaseRenderer.next_clip_box());
@@ -1075,40 +1134,57 @@ Painter::FillRect(const BRect& r, const BGradient& gradient)
 void
 Painter::FillRect(const BRect& r, const rgb_color& c) const
 {
-	if (!fValidClipping)
+	if (!fValidClipping || !fAttached)
 		return;
 
-	uint8* dst = fBuffer.row_ptr(0);
-	uint32 bpr = fBuffer.stride();
-	int32 left = (int32)r.left;
-	int32 top = (int32)r.top;
-	int32 right = (int32)r.right;
-	int32 bottom = (int32)r.bottom;
+	// 1. Convert to SIGNED local coordinates immediately
+	int32 left = (int32)r.left - fRendererOffsetX;
+	int32 top = (int32)r.top - fRendererOffsetY;
+	int32 right = (int32)r.right - fRendererOffsetX;
+	int32 bottom = (int32)r.bottom - fRendererOffsetY;
+
+	// 2. Physical Buffer Clipping (Early Exit)
+	int32 bufW = (int32)fBuffer.width();
+	int32 bufH = (int32)fBuffer.height();
+
+	if (right < 0 || left >= bufW || bottom < 0 || top >= bufH)
+		return;
+
+	// Clamp to physical buffer bounds
+	int32 localLeft = max_c(0, left);
+	int32 localTop = max_c(0, top);
+	int32 localRight = min_c(bufW - 1, right);
+	int32 localBottom = min_c(bufH - 1, bottom);
+
 	// get a 32 bit pixel ready with the color
 	pixel32 color;
 	color.data8[0] = c.blue;
 	color.data8[1] = c.green;
 	color.data8[2] = c.red;
 	color.data8[3] = c.alpha;
+
 	// fill rects, iterate over clipping boxes
 	fBaseRenderer.first_clip_box();
 	do {
-		int32 x1 = max_c(fBaseRenderer.xmin(), left);
-		int32 x2 = min_c(fBaseRenderer.xmax(), right);
+		// Get local clipping box
+		int32 clipLeft = fBaseRenderer.xmin() - fRendererOffsetX;
+		int32 clipRight = fBaseRenderer.xmax() - fRendererOffsetX;
+		int32 clipTop = fBaseRenderer.ymin() - fRendererOffsetY;
+		int32 clipBottom = fBaseRenderer.ymax() - fRendererOffsetY;
+
+		int32 x1 = max_c(clipLeft, localLeft);
+		int32 x2 = min_c(clipRight, localRight);
 		if (x1 <= x2) {
-			int32 y1 = max_c(fBaseRenderer.ymin(), top);
-			int32 y2 = min_c(fBaseRenderer.ymax(), bottom);
-			uint8* offset = dst + x1 * 4;
+			int32 y1 = max_c(clipTop, localTop);
+			int32 y2 = min_c(clipBottom, localBottom);
+			
 			for (; y1 <= y2; y1++) {
-//					uint32* handle = (uint32*)(offset + y1 * bpr);
-//					for (int32 x = x1; x <= x2; x++) {
-//						*handle++ = color.data32;
-//					}
-				gfxset32(offset + y1 * bpr, color.data32, (x2 - x1 + 1) * 4);
+				gfxset32(fBuffer.row_ptr(y1) + x1 * 4, color.data32, (x2 - x1 + 1) * 4);
 			}
 		}
 	} while (fBaseRenderer.next_clip_box());
 }
+
 
 
 // FillRectVerticalGradient
@@ -1116,7 +1192,7 @@ void
 Painter::FillRectVerticalGradient(BRect r,
 	const BGradientLinear& gradient) const
 {
-	if (!fValidClipping)
+	if (!fValidClipping || !fAttached)
 		return;
 
 	// Make sure the color array is no larger than the screen height.
@@ -1136,28 +1212,42 @@ Painter::FillRectVerticalGradient(BRect r,
 	_MakeGradient(gradient, colorCount, gradientArray,
 		gradientTop - (int32)r.top, gradientArraySize);
 
-	uint8* dst = fBuffer.row_ptr(0);
-	uint32 bpr = fBuffer.stride();
-	int32 left = (int32)r.left;
-	int32 top = (int32)r.top;
-	int32 right = (int32)r.right;
-	int32 bottom = (int32)r.bottom;
+	// 1. Convert to SIGNED local coordinates immediately
+	int32 left = (int32)r.left - fRendererOffsetX;
+	int32 top = (int32)r.top - fRendererOffsetY;
+	int32 right = (int32)r.right - fRendererOffsetX;
+	int32 bottom = (int32)r.bottom - fRendererOffsetY;
+
+	// 2. Physical Buffer Clipping (Early Exit)
+	int32 bufW = (int32)fBuffer.width();
+	int32 bufH = (int32)fBuffer.height();
+
+	if (right < 0 || left >= bufW || bottom < 0 || top >= bufH)
+		return;
+
+	// Clamp to physical buffer bounds
+	int32 localLeft = max_c(0, left);
+	int32 localTop = max_c(0, top);
+	int32 localRight = min_c(bufW - 1, right);
+	int32 localBottom = min_c(bufH - 1, bottom);
+
 	// fill rects, iterate over clipping boxes
 	fBaseRenderer.first_clip_box();
 	do {
-		int32 x1 = max_c(fBaseRenderer.xmin(), left);
-		int32 x2 = min_c(fBaseRenderer.xmax(), right);
+		// Get local clipping box
+		int32 clipLeft = fBaseRenderer.xmin() - fRendererOffsetX;
+		int32 clipRight = fBaseRenderer.xmax() - fRendererOffsetX;
+		int32 clipTop = fBaseRenderer.ymin() - fRendererOffsetY;
+		int32 clipBottom = fBaseRenderer.ymax() - fRendererOffsetY;
+
+		int32 x1 = max_c(clipLeft, localLeft);
+		int32 x2 = min_c(clipRight, localRight);
 		if (x1 <= x2) {
-			int32 y1 = max_c(fBaseRenderer.ymin(), top);
-			int32 y2 = min_c(fBaseRenderer.ymax(), bottom);
-			uint8* offset = dst + x1 * 4;
+			int32 y1 = max_c(clipTop, localTop);
+			int32 y2 = min_c(clipBottom, localBottom);
 			for (; y1 <= y2; y1++) {
-//					uint32* handle = (uint32*)(offset + y1 * bpr);
-//					for (int32 x = x1; x <= x2; x++) {
-//						*handle++ = gradientArray[y1 - top];
-//					}
-				gfxset32(offset + y1 * bpr, gradientArray[y1 - top],
-					(x2 - x1 + 1) * 4);
+				gfxset32(fBuffer.row_ptr(y1) + x1 * 4,
+					gradientArray[y1 + fRendererOffsetY - (int32)r.top], (x2 - x1 + 1) * 4);
 			}
 		}
 	} while (fBaseRenderer.next_clip_box());
@@ -1168,9 +1258,14 @@ Painter::FillRectVerticalGradient(BRect r,
 void
 Painter::FillRectNoClipping(const clipping_rect& r, const rgb_color& c) const
 {
-	int32 y = (int32)r.top;
+	if (!fAttached)
+		return;
 
-	uint8* dst = fBuffer.row_ptr(y) + r.left * 4;
+	int32 y = (int32)r.top;
+	int32 localY = y - fRendererOffsetY;
+	int32 localLeft = (int32)r.left - fRendererOffsetX;
+
+	uint8* dst = fBuffer.row_ptr(localY) + localLeft * 4;
 	uint32 bpr = fBuffer.stride();
 	int32 bytes = (r.right - r.left + 1) * 4;
 
@@ -1182,10 +1277,6 @@ Painter::FillRectNoClipping(const clipping_rect& r, const rgb_color& c) const
 	color.data8[3] = c.alpha;
 
 	for (; y <= r.bottom; y++) {
-//			uint32* handle = (uint32*)dst;
-//			for (int32 x = left; x <= right; x++) {
-//				*handle++ = color.data32;
-//			}
 		gfxset32(dst, color.data32, bytes);
 		dst += bpr;
 	}
@@ -1573,8 +1664,17 @@ Painter::DrawBitmap(const ServerBitmap* bitmap, BRect bitmapRect,
 	BRect touched = TransformAlignAndClipRect(viewRect);
 
 	if (touched.IsValid()) {
+		// Bulletproof Translation: Map destination to Local Buffer Coordinates
+		BRect localDestinationRect = viewRect;
+		localDestinationRect.OffsetBy(-fRendererOffsetX, -fRendererOffsetY);
+
+		// Early exit if the bitmap is completely outside the buffer
+		BRect bufferBounds(0, 0, fBuffer.width() - 1, fBuffer.height() - 1);
+		if (!localDestinationRect.Intersects(bufferBounds))
+			return touched;
+
 		BitmapPainter bitmapPainter(this, bitmap, options);
-		bitmapPainter.Draw(bitmapRect, viewRect);
+		bitmapPainter.Draw(bitmapRect, localDestinationRect);
 	}
 
 	return touched;
@@ -1637,6 +1737,8 @@ Painter::InvertRect(const BRect& r) const
 void
 Painter::SetRendererOffset(int32 offsetX, int32 offsetY)
 {
+	fRendererOffsetX = offsetX;
+	fRendererOffsetY = offsetY;
 	fBaseRenderer.set_offset(offsetX, offsetY);
 }
 
@@ -1853,10 +1955,31 @@ Painter::_IterateShapeData(const int32& opCount, const uint32* opList,
 void
 Painter::_InvertRect32(BRect r) const
 {
-	int32 width = r.IntegerWidth() + 1;
-	for (int32 y = (int32)r.top; y <= (int32)r.bottom; y++) {
-		uint8* dst = fBuffer.row_ptr(y);
-		dst += (int32)r.left * 4;
+	if (!fAttached)
+		return;
+
+	// 1. Convert to SIGNED local coordinates immediately
+	int32 left = (int32)r.left - fRendererOffsetX;
+	int32 top = (int32)r.top - fRendererOffsetY;
+	int32 right = (int32)r.right - fRendererOffsetX;
+	int32 bottom = (int32)r.bottom - fRendererOffsetY;
+
+	// 2. Physical Buffer Clipping (Early Exit)
+	int32 bufW = (int32)fBuffer.width();
+	int32 bufH = (int32)fBuffer.height();
+
+	if (right < 0 || left >= bufW || bottom < 0 || top >= bufH)
+		return;
+
+	// Clamp to physical buffer bounds
+	int32 localLeft = max_c(0, left);
+	int32 localTop = max_c(0, top);
+	int32 localRight = min_c(bufW - 1, right);
+	int32 localBottom = min_c(bufH - 1, bottom);
+
+	int32 width = localRight - localLeft + 1;
+	for (int32 y = localTop; y <= localBottom; y++) {
+		uint8* dst = fBuffer.row_ptr(y) + localLeft * 4;
 		for (int32 i = 0; i < width; i++) {
 			dst[0] = 255 - dst[0];
 			dst[1] = 255 - dst[1];
@@ -1871,31 +1994,46 @@ Painter::_InvertRect32(BRect r) const
 void
 Painter::_BlendRect32(const BRect& r, const rgb_color& c) const
 {
-	if (!fValidClipping)
+	if (!fValidClipping || !fAttached)
 		return;
 
-	uint8* dst = fBuffer.row_ptr(0);
-	uint32 bpr = fBuffer.stride();
+	// 1. Convert to SIGNED local coordinates immediately
+	int32 left = (int32)r.left - fRendererOffsetX;
+	int32 top = (int32)r.top - fRendererOffsetY;
+	int32 right = (int32)r.right - fRendererOffsetX;
+	int32 bottom = (int32)r.bottom - fRendererOffsetY;
 
-	int32 left = (int32)r.left;
-	int32 top = (int32)r.top;
-	int32 right = (int32)r.right;
-	int32 bottom = (int32)r.bottom;
+	// 2. Physical Buffer Clipping (Early Exit)
+	int32 bufW = (int32)fBuffer.width();
+	int32 bufH = (int32)fBuffer.height();
+
+	if (right < 0 || left >= bufW || bottom < 0 || top >= bufH)
+		return;
+
+	// Clamp to physical buffer bounds
+	int32 localLeft = max_c(0, left);
+	int32 localTop = max_c(0, top);
+	int32 localRight = min_c(bufW - 1, right);
+	int32 localBottom = min_c(bufH - 1, bottom);
 
 	// fill rects, iterate over clipping boxes
 	fBaseRenderer.first_clip_box();
 	do {
-		int32 x1 = max_c(fBaseRenderer.xmin(), left);
-		int32 x2 = min_c(fBaseRenderer.xmax(), right);
-		if (x1 <= x2) {
-			int32 y1 = max_c(fBaseRenderer.ymin(), top);
-			int32 y2 = min_c(fBaseRenderer.ymax(), bottom);
+		// Get local clipping box
+		int32 clipLeft = fBaseRenderer.xmin() - fRendererOffsetX;
+		int32 clipRight = fBaseRenderer.xmax() - fRendererOffsetX;
+		int32 clipTop = fBaseRenderer.ymin() - fRendererOffsetY;
+		int32 clipBottom = fBaseRenderer.ymax() - fRendererOffsetY;
 
-			uint8* offset = dst + x1 * 4 + y1 * bpr;
+		int32 x1 = max_c(clipLeft, localLeft);
+		int32 x2 = min_c(clipRight, localRight);
+		if (x1 <= x2) {
+			int32 y1 = max_c(clipTop, localTop);
+			int32 y2 = min_c(clipBottom, localBottom);
+
 			for (; y1 <= y2; y1++) {
-				blend_line32(offset, x2 - x1 + 1, c.red, c.green, c.blue,
-					c.alpha);
-				offset += bpr;
+				blend_line32(fBuffer.row_ptr(y1) + x1 * 4, x2 - x1 + 1,
+					c.red, c.green, c.blue, c.alpha);
 			}
 		}
 	} while (fBaseRenderer.next_clip_box());

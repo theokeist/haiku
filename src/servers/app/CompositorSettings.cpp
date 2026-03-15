@@ -25,6 +25,7 @@ static const char* kDebugControlsKey = "debug_controls";
 static const char* kForceBlurAllKey = "force_blur_all";
 static const char* kForceOpacityKey = "force_opacity";
 static const char* kForceOpacityOnlyOpaqueKey = "force_opacity_only_opaque";
+static const char* kSystemAlphaKey = "system_alpha";
 static const char* kShowOverlayKey = "show_overlay";
 static const char* kLogTimingsKey = "log_timings";
 static const char* kStressInvalidateKey = "stress_invalidate";
@@ -55,9 +56,11 @@ CompositorSettings::SetDefaults()
 	force_blur_all = false;
 	force_opacity = -1.0f;
 	force_opacity_only_opaque = true;
+	system_alpha = 0.85f;
 	show_overlay = false;
 	log_timings = false;
 	stress_invalidate = false;
+	true_shadows = false;
 	enable_title_blur_policy = true;
 	enable_floating_untitled_blur_policy = true;
 	blur_policy_tokens = "deskbar,notification,notify";
@@ -97,10 +100,12 @@ CompositorSettings::LoadFromSettingsFile()
 	force_opacity = settings.GetFloat(kForceOpacityKey, force_opacity);
 	force_opacity_only_opaque = settings.GetBool(kForceOpacityOnlyOpaqueKey,
 		force_opacity_only_opaque);
+	system_alpha = settings.GetFloat(kSystemAlphaKey, system_alpha);
 	show_overlay = settings.GetBool(kShowOverlayKey, show_overlay);
 	log_timings = settings.GetBool(kLogTimingsKey, log_timings);
 	stress_invalidate = settings.GetBool(kStressInvalidateKey,
 		stress_invalidate);
+	true_shadows = settings.GetBool("true_shadows", true_shadows);
 	enable_title_blur_policy = settings.GetBool(kEnableTitleBlurPolicyKey,
 		enable_title_blur_policy);
 	enable_floating_untitled_blur_policy = settings.GetBool(
@@ -119,6 +124,11 @@ CompositorSettings::LoadFromSettingsFile()
 		force_opacity = 1.0f;
 	if (force_opacity < 0.0f && force_opacity != -1.0f)
 		force_opacity = -1.0f;
+
+	if (system_alpha > 1.0f)
+		system_alpha = 1.0f;
+	if (system_alpha < 0.0f)
+		system_alpha = 0.0f;
 
 	return B_OK;
 }

@@ -56,6 +56,8 @@ public:
 								// frame buffer stuff
 			void				AttachToBuffer(RenderingBuffer* buffer);
 			void				DetachFromBuffer();
+			RenderingBuffer*	AttachedBuffer() const { return fAttachedBuffer; }
+			bool				IsAttached() const { return fAttached; }
 			BRect				Bounds() const;
 
 			void				SetDrawState(const DrawState* data,
@@ -365,6 +367,10 @@ private:
 			float				fMiterLimit;
 
 			PatternHandler		fPatternHandler;
+
+			RenderingBuffer*	fAttachedBuffer;
+			int32				fRendererOffsetX;
+			int32				fRendererOffsetY;
 
 	// a class handling rendering and caching of glyphs
 	// it is setup to load from a specific Freetype supported

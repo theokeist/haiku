@@ -41,8 +41,6 @@
 
 #include <vector>
 
-#include <vector>
-
 #include <PrivateScreen.h>
 #include <ServerProtocol.h>
 #include <ServerReadOnlyMemory.h>
@@ -507,7 +505,7 @@ MouseFilter::Filter(BMessage* message, EventTarget** _target, int32* _viewToken,
 
 	fDesktop->UnlockAllWindows();
 
-	return B_DISPATCH_MESSAGE;
+	return B_SKIP_MESSAGE;
 }
 
 
@@ -1417,7 +1415,7 @@ Desktop::SendWindowBehind(Window* window, Window* behindOf, bool sendStack)
 
 	// what is currently visible of the window
 	// might be dirty after the window is send to back
-	BRegion dirty(window->VisibleRegion());
+	BRegion dirty(window->VisibleRegion()); _AddShadowRegion(window, dirty);
 
 	Window* backmost = window->Backmost(behindOf);
 	const Window* lastWindowUnderMouse = fWindowUnderMouse;
@@ -1624,6 +1622,7 @@ Desktop::MoveWindowBy(Window* window, float x, float y, int32 workspace)
 
 	// the dirty region starts with the visible area of the window being moved
 	BRegion newDirtyRegion(window->VisibleRegion());
+	_AddShadowRegion(window, newDirtyRegion);
 
 	// stop direct frame buffer access
 	bool direct = false;
@@ -1647,18 +1646,21 @@ Desktop::MoveWindowBy(Window* window, float x, float y, int32 workspace)
 	// include the the new visible region of the window being
 	// moved into the dirty region (for now)
 	newDirtyRegion.Include(&window->VisibleRegion());
+	_AddShadowRegion(window, newDirtyRegion);
 
-	// NOTE: Having all windows locked should prevent any
-	// problems with locking the drawing engine here.
-	if (GetDrawingEngine()->LockParallelAccess()) {
-		GetDrawingEngine()->CopyRegion(&copyRegion, (int32)x, (int32)y);
-		GetDrawingEngine()->UnlockParallelAccess();
+	if (!fCompositorSettings.enable_compositor) {
+		// NOTE: Having all windows locked should prevent any
+		// problems with locking the drawing engine here.
+		if (GetDrawingEngine()->LockParallelAccess()) {
+			GetDrawingEngine()->CopyRegion(&copyRegion, (int32)x, (int32)y);
+			GetDrawingEngine()->UnlockParallelAccess();
+		}
+
+		// in the dirty region, exclude the parts that we
+		// could move by blitting
+		copyRegion.OffsetBy((int32)x, (int32)y);
+		newDirtyRegion.Exclude(&copyRegion);
 	}
-
-	// in the dirty region, exclude the parts that we
-	// could move by blitting
-	copyRegion.OffsetBy((int32)x, (int32)y);
-	newDirtyRegion.Exclude(&copyRegion);
 
 	MarkDirty(newDirtyRegion);
 	_SetBackground(background);
@@ -1669,7 +1671,7 @@ Desktop::MoveWindowBy(Window* window, float x, float y, int32 workspace)
 		// TODO: the clipping actually only changes when we move our window
 		// off screen, or behind some other window
 		window->ServerWindow()->HandleDirectConnection(
-			B_DIRECT_START | B_BUFFER_MOVED | B_CLIPPING_MODIFIED);
+			B_DIRECT_MODIFY | B_BUFFER_MOVED | B_CLIPPING_MODIFIED);
 	}
 
 	NotifyWindowMoved(window);
@@ -1698,7 +1700,7 @@ Desktop::ResizeWindowBy(Window* window, float x, float y)
 	// ResizeBy()
 	BRegion newDirtyRegion;
 	// Track the dirty region outside the window in case it is shrunk in "previouslyOccupiedRegion"
-	BRegion previouslyOccupiedRegion(window->VisibleRegion());
+	BRegion previouslyOccupiedRegion(window->VisibleRegion()); _AddShadowRegion(window, previouslyOccupiedRegion);
 	// Track the region that was drawn in previous update sessions, so we can compute the newly
 	// exposed areas by excluding this from the update region.
 	BRegion previousVisibleContentRegion(window->VisibleContentRegion());
@@ -1720,7 +1722,7 @@ Desktop::ResizeWindowBy(Window* window, float x, float y)
 
 	// make sure the window cannot mark stuff dirty outside
 	// its visible region...
-	newDirtyRegion.IntersectWith(&window->VisibleRegion());
+	newDirtyRegion.IntersectWith(&window->VisibleRegion()); _AddShadowRegion(window, newDirtyRegion);
 	// ...because we do this ourselves
 	newDirtyRegion.Include(&previouslyOccupiedRegion);
 
@@ -1739,7 +1741,7 @@ Desktop::ResizeWindowBy(Window* window, float x, float y)
 	// resume direct frame buffer access
 	if (direct) {
 		window->ServerWindow()->HandleDirectConnection(
-			B_DIRECT_START | B_BUFFER_RESIZED | B_CLIPPING_MODIFIED);
+			B_DIRECT_MODIFY | B_BUFFER_RESIZED | B_CLIPPING_MODIFIED);
 	}
 
 	NotifyWindowResized(window);
@@ -2034,7 +2036,7 @@ Desktop::SetWindowFeel(Window* window, window_feel newFeel)
 
 			// mark everything dirty that is no longer visible, or
 			// is now visible and wasn't before
-			BRegion visibleAfter(window->VisibleRegion());
+			BRegion visibleAfter(window->VisibleRegion()); _AddShadowRegion(window, visibleAfter);
 			BRegion dirty(visibleAfter);
 			dirty.Exclude(&visibleBefore);
 			visibleBefore.Exclude(&visibleAfter);
@@ -2069,6 +2071,13 @@ Desktop::SetWindowFlags(Window *window, uint32 newFlags)
 		// finds out it needs to resize itself...
 
 	RebuildAndRedrawAfterWindowChange(window, dirty);
+}
+
+
+void
+Desktop::SetAlphaDebugEnabled(bool enabled)
+{
+	fAlphaDebugEnabled = enabled;
 }
 
 
@@ -2132,8 +2141,14 @@ Desktop::HandleAlphaDebugWheel(const BMessage& message)
 		return true;
 
 	Window* window = FocusWindow();
-	if (window != NULL)
-		window->SetAlpha(window->Alpha() + deltaY * 0.05f);
+	if (window != NULL) {
+		const char* title = window->Title();
+		bool isSystemEffectWindow = title != NULL && (strcmp(title, "Deskbar") == 0
+			|| title_contains_case_insensitive(title, "notification"));
+
+		if (!isSystemEffectWindow)
+			window->SetAlpha(window->Alpha() + deltaY * 0.05f);
+	}
 
 	UnlockAllWindows();
 	return true;
@@ -2148,8 +2163,9 @@ Desktop::WindowAt(BPoint where)
 {
 	for (Window* window = CurrentWindows().LastWindow(); window;
 			window = window->PreviousWindow(fCurrentWorkspace)) {
-		if (window->IsVisible() && window->VisibleRegion().Contains(where))
-			return window->StackedWindowAt(where);
+		BPoint logicalWhere = where - window->VisualTranslation();
+		if (window->IsVisible() && window->VisibleRegion().Contains(logicalWhere))
+			return window->StackedWindowAt(logicalWhere);
 	}
 
 	return NULL;
@@ -3366,7 +3382,7 @@ Desktop::_ShowWindow(Window* window, bool affectsOtherWindows)
 	_SetBackground(background);
 	_WindowChanged(window);
 
-	BRegion dirty(window->VisibleRegion());
+	BRegion dirty(window->VisibleRegion()); _AddShadowRegion(window, dirty);
 
 	if (!affectsOtherWindows) {
 		// everything that is now visible in the
@@ -3400,7 +3416,7 @@ Desktop::_HideWindow(Window* window)
 	// (actually that's not true, since
 	// hidden windows are excluded from the
 	// clipping calculation, but anyways)
-	BRegion dirty(window->VisibleRegion());
+	BRegion dirty(window->VisibleRegion()); _AddShadowRegion(window, dirty);
 
 	BRegion background;
 	_RebuildClippingForAllWindows(background);
@@ -3678,7 +3694,14 @@ Desktop::_RebuildClippingForAllWindows(BRegion& stillAvailableOnScreen)
 			}
 
 			// that windows region is not available on screen anymore
-			stillAvailableOnScreen.Exclude(&window->VisibleRegion());
+			bool clips = true;
+			if (fCompositorSettings.enable_compositor) {
+				CompositorEffectState effect = _ResolveEffectState(window, system_time());
+				clips = effect.opaqueFastPath;
+			}
+
+			if (clips)
+				stillAvailableOnScreen.Exclude(&window->VisibleRegion());
 		}
 	}
 }
@@ -3709,15 +3732,44 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 
 			WindowSnapshot snapshot;
 			snapshot.visible = window->VisibleRegion();
+			
+			// FIX: Correct translation logic for compositor mapping
+			BRegion footprint;
+			window->GetFullRegion(&footprint);
+			snapshot.fullFootprintFrame = footprint.Frame();
+			snapshot.translation = snapshot.fullFootprintFrame.LeftTop();
+			snapshot.contentFrame = window->Frame();
+			snapshot.buffer = window->DrawingBufferReference();
+			
 			CompositorEffectState effect = _ResolveEffectState(window, now);
 			snapshot.alpha = effect.alpha;
 			snapshot.opaqueFastPath = effect.opaqueFastPath;
 			snapshot.animActive = effect.animActive;
-			snapshot.window = window;
 			snapshot.blurEnabled = effect.blurEnabled;
 			snapshot.blurRadius = effect.blurRadius;
 			snapshot.blurRect = effect.blurRect;
+			snapshot.blurBehind = window_should_blur_behind(window);
+			snapshot.shadowRadius = effect.shadowRadius;
+			snapshot.shadowOffset = effect.shadowOffset;
+			snapshot.shadowOpacity = effect.shadowOpacity;
+			snapshot.bufferGeneration = window->BufferGeneration();
+			
+			if (window->ServerWindow() != NULL) {
+				snapshot.serverToken = window->ServerWindow()->ServerToken();
+				snapshot.retained.surfaceToken = snapshot.serverToken;
+				snapshot.isDirect = window->ServerWindow()->IsDirectlyAccessing();
+			} else {
+				snapshot.serverToken = 0;
+				snapshot.retained.surfaceToken = 0;
+				snapshot.isDirect = false;
+			}
+			snapshot.retained.surfaceGeneration = window->LastComposedGeneration();
+			snapshot.retained.valid = true;
+
 			snapshots.push_back(snapshot);
+			
+			// Mark as composed
+			window->SetLastComposedGeneration(snapshot.bufferGeneration);
 		}
 
 		HWInterface()->UpdateCompositorState(snapshots,
@@ -3733,6 +3785,21 @@ Desktop::_TriggerWindowRedrawing(BRegion& dirtyRegion, BRegion& exposeRegion)
 		if (!window->IsHidden()
 			&& dirtyRegion.Intersects(window->VisibleRegion().Frame()))
 			window->ProcessDirtyRegion(dirtyRegion, exposeRegion);
+	}
+}
+
+
+void
+Desktop::_AddShadowRegion(Window* window, BRegion& region) const
+{
+	if (!fCompositorSettings.enable_compositor)
+		return;
+	CompositorEffectState state = _ResolveEffectState(window, system_time());
+	if (state.shadowRadius > 0.0f) {
+		BRect rect = window->Frame();
+		rect.InsetBy(-state.shadowRadius, -state.shadowRadius);
+		rect.OffsetBy(state.shadowOffset.x, state.shadowOffset.y);
+		region.Include(rect);
 	}
 }
 
@@ -3755,6 +3822,23 @@ Desktop::_ResolveEffectState(Window* window, bigtime_t now) const
 	state.blurEnabled = allowBlur && window->BlurEnabled();
 	state.blurRadius = window->BlurRadius();
 	state.blurRect = state.blurEnabled ? window->BlurRegion() : BRect();
+
+	// Shadows
+	if (!window->IsHidden() && window->Feel() != kDesktopWindowFeel) {
+		if (window->IsFloating()) {
+			state.shadowRadius = 8.0f;
+			state.shadowOffset = BPoint(0.0f, 4.0f);
+			state.shadowOpacity = 0.35f;
+		} else {
+			state.shadowRadius = 15.0f;
+			state.shadowOffset = BPoint(0.0f, 8.0f);
+			state.shadowOpacity = 0.5f;
+		}
+	} else {
+		state.shadowRadius = 0.0f;
+		state.shadowOffset = BPoint(0.0f, 0.0f);
+		state.shadowOpacity = 0.0f;
+	}
 
 	// Base policy: some windows are considered blur-behind by default
 	// (deskbar, notifications, floating untitled, etc.). Include that
@@ -3794,7 +3878,7 @@ Desktop::_ResolveEffectState(Window* window, bigtime_t now) const
 	}
 
 	if (state.blurEnabled && state.alpha >= 1.0f)
-		state.alpha = 0.85f;
+		state.alpha = fCompositorSettings.system_alpha;
 
 	if (fCompositorSettings.force_opacity >= 0.0f
 		&& window->Feel() != kDesktopWindowFeel) {
@@ -3803,7 +3887,8 @@ Desktop::_ResolveEffectState(Window* window, bigtime_t now) const
 	}
 
 	state.opaqueFastPath = state.alpha >= 1.0f
-		&& (!state.blurEnabled || state.blurRadius <= 0.0f);
+		&& (!state.blurEnabled || state.blurRadius <= 0.0f)
+		&& state.shadowRadius <= 0.0f;
 
 	if (!state.blurEnabled)
 		state.blurRect = BRect();
@@ -3869,7 +3954,14 @@ Desktop::RebuildAndRedrawAfterWindowChange(Window* changedWindow,
 			}
 
 			// that windows region is not available on screen anymore
-			stillAvailableOnScreen.Exclude(&window->VisibleRegion());
+			bool clips = true;
+			if (fCompositorSettings.enable_compositor) {
+				CompositorEffectState effect = _ResolveEffectState(window, system_time());
+				clips = effect.opaqueFastPath;
+			}
+
+			if (clips)
+				stillAvailableOnScreen.Exclude(&window->VisibleRegion());
 		}
 	}
 
@@ -3910,7 +4002,7 @@ Desktop::_ResumeDirectFrameBufferAccess()
 
 		if (window->ServerWindow()->HasDirectFrameBufferAccess()) {
 			window->ServerWindow()->HandleDirectConnection(
-				B_DIRECT_START | B_BUFFER_RESET, B_MODE_CHANGED);
+				B_DIRECT_MODIFY | B_BUFFER_RESET, B_MODE_CHANGED);
 		}
 	}
 }

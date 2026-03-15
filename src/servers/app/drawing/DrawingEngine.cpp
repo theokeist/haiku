@@ -260,6 +260,28 @@ DrawingEngine::FrameBufferChanged()
 
 
 void
+DrawingEngine::SetTarget(RenderingBuffer* buffer)
+{
+	if (LockExclusiveAccess()) {
+		if (buffer != NULL)
+			fPainter->AttachToBuffer(buffer);
+		else if (fGraphicsCard != NULL)
+			fPainter->AttachToBuffer(fGraphicsCard->DrawingBuffer());
+		else
+			fPainter->DetachFromBuffer();
+		UnlockExclusiveAccess();
+	}
+}
+
+
+RenderingBuffer*
+DrawingEngine::Target() const
+{
+	return fPainter->AttachedBuffer();
+}
+
+
+void
 DrawingEngine::SetHWInterface(HWInterface* interface)
 {
 	if (fGraphicsCard == interface)
@@ -1478,6 +1500,14 @@ DrawingEngine::CopyRect(BRect src, int32 xOffset, int32 yOffset) const
 void
 DrawingEngine::SetRendererOffset(int32 offsetX, int32 offsetY)
 {
+	// TRAP 6: Extreme Offset Check
+	// If the offset is larger than the screen or negative, the coordinate mapping is broken.
+	if (offsetX < -20000 || offsetX > 20000 || offsetY < -20000 || offsetY > 20000) {
+		debug_printf("STAGE 8 CRITICAL: Insane Renderer Offset detected: (%d, %d). Crash imminent.\n",
+			(int)offsetX, (int)offsetY);
+		debugger("STAGE 8 CRITICAL: Insane Renderer Offset detected. Crash imminent.");
+	}
+
 	fPainter->SetRendererOffset(offsetX, offsetY);
 }
 

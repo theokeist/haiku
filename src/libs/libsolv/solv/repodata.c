@@ -242,7 +242,7 @@ repodata_free_schemahash(Repodata *data)
  * dir pool management
  */
 
-#ifndef HAVE_STRCHRNUL
+#if (!defined(HAVE_STRCHRNUL) || defined(__APPLE__)) && !defined(__HAIKU__)
 static inline const char *strchrnul(const char *str, char x)
 {
   const char *p = strchr(str, x);

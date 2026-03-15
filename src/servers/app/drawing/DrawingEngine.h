@@ -44,6 +44,8 @@ public:
 
 	// for "changing" hardware
 			void			SetHWInterface(HWInterface* interface);
+			void			SetTarget(RenderingBuffer* buffer);
+			RenderingBuffer* Target() const;
 
 	virtual	void			SetCopyToFrontEnabled(bool enable);
 			bool			CopyToFrontEnabled() const

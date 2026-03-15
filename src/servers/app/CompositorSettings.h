@@ -21,9 +21,11 @@ struct CompositorSettings {
 	bool		force_blur_all;
 	float		force_opacity;
 	bool		force_opacity_only_opaque;
+	float		system_alpha;
 	bool		show_overlay;
 	bool		log_timings;
 	bool		stress_invalidate;
+	bool		true_shadows;
 	bool		enable_title_blur_policy;
 	bool		enable_floating_untitled_blur_policy;
 	BString		blur_policy_tokens;

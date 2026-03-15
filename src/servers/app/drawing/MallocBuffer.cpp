@@ -17,7 +17,7 @@ MallocBuffer::MallocBuffer(uint32 width,
 	  fHeight(height)
 {
 	if (fWidth > 0 && fHeight > 0) {
-		fBuffer = malloc((fWidth * 4) * fHeight);
+		fBuffer = calloc(fWidth * fHeight, 4);
 	}
 }
 

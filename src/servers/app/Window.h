@@ -20,6 +20,7 @@
 #include "ServerWindow.h"
 #include "View.h"
 #include "WindowList.h"
+#include "CompositorBuffer.h"
 
 #include <AutoDeleter.h>
 #include <ObjectList.h>
@@ -74,6 +75,7 @@ class Decorator;
 class Desktop;
 class DrawingEngine;
 class EventDispatcher;
+class RenderingBuffer;
 class Screen;
 class WindowBehaviour;
 class WorkspacesView;
@@ -125,6 +127,20 @@ public:
 
 			void				SetScreen(const ::Screen* screen);
 			const ::Screen*		Screen() const;
+
+			void				SetDrawingBuffer(CompositorBuffer* buffer)
+									{ fDrawingBuffer.SetTo(buffer); }
+			RenderingBuffer*	DrawingBuffer() const { return fDrawingBuffer.IsSet() ? fDrawingBuffer->Buffer() : NULL; }
+			CompositorBuffer*	DrawingBufferReference() const { return fDrawingBuffer.Get(); }
+			int32				BufferGeneration() const { return fBufferGeneration; }
+			void				IncrementBufferGeneration() { atomic_add(&fBufferGeneration, 1); }
+			int32				LastComposedGeneration() const { return fLastComposedGeneration; }
+			void				SetLastComposedGeneration(int32 gen) { fLastComposedGeneration = gen; }
+
+			void				SetVisualTranslation(BPoint translation)
+									{ fVisualTranslation = translation; }
+			BPoint				VisualTranslation() const { return fVisualTranslation; }
+
 
 			// setting and getting the "hard" clipping, you need to have
 			// WriteLock()ed the clipping!
@@ -470,6 +486,11 @@ protected:
 			int32				fMaxHeight;
 
 			int32				fWorkspacesViewCount;
+
+			BReference<CompositorBuffer> fDrawingBuffer;
+			int32				fBufferGeneration;
+			int32				fLastComposedGeneration;
+			BPoint				fVisualTranslation;
 
 		friend class DecorManager;
 

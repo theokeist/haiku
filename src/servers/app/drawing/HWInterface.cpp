@@ -27,6 +27,8 @@
 #include "MallocBuffer.h"
 #include "PresentQueue.h"
 #include "RenderingBuffer.h"
+#include "ServerBitmapBuffer.h"
+#include "SurfaceManager.h"
 #include "SystemPalette.h"
 #include "Window.h"
 
@@ -36,37 +38,6 @@ using std::nothrow;
 
 
 namespace {
-
-static void
-_AppendStressReplayRegions(const BRegion& base, const IntRect& bounds,
-	int64 frameCounter, std::vector<BRegion>& out)
-{
-	if (base.CountRects() == 0)
-		return;
-
-	BRegion boundsRegion;
-	boundsRegion.Set((BRect)bounds);
-
-	// Replay 1: shifted copy of current dirty region to emulate rapid moves.
-	BRegion shifted(base);
-	shifted.OffsetBy(8.0f, 8.0f);
-	shifted.IntersectWith(&boundsRegion);
-	if (shifted.CountRects() > 0)
-		out.push_back(shifted);
-
-	// Replay 2: vertical strip to emulate occlusion/unocclusion damage.
-	BRect frame = bounds;
-	float center = frame.left + frame.Width() / 2.0f;
-	BRect strip(center - 24.0f, frame.top, center + 24.0f, frame.bottom);
-	BRegion occlusionStrip(strip);
-	occlusionStrip.IntersectWith(&boundsRegion);
-	if (occlusionStrip.CountRects() > 0)
-		out.push_back(occlusionStrip);
-
-	// Replay 3: periodic full-screen invalidation burst.
-	if ((frameCounter % 4) == 0)
-		out.push_back(boundsRegion);
-}
 
 } // namespace
 
@@ -124,6 +95,7 @@ HWInterface::HWInterface()
 	fDragBitmap(NULL),
 	fDragBitmapOffset(0, 0),
 	fCursorAndDragBitmap(NULL),
+	fCursorBitmapBuffer(NULL),
 	fCursorVisible(false),
 	fCursorObscured(false),
 	fHardwareCursorEnabled(false),
@@ -132,8 +104,9 @@ HWInterface::HWInterface()
 	fVGADevice(-1),
 	fPresentQueue(NULL),
 	fCompositor(NULL),
-	fWindowSnapshots(),
-	fCompositorBackground((rgb_color){0, 0, 0, 255}),
+	fCompositorStateWrite(1),
+	fCompositorStateReady(0),
+	fCompositorStateRead(0),
 	fCompositorFrameCounter(0),
 	fCompositorLogEveryN(120),
 	fCompositorComposeAccum(0),
@@ -150,6 +123,7 @@ HWInterface::HWInterface()
 	fCompositorLogLevel(0),
 	fCompositorSettingsLock("compositor settings lock"),
 	fPendingInvalidate(),
+	fTileDamageTracker(NULL),
 	fPresentInvalidateLock("present invalidate lock"),
 	fPresentThread(-1),
 	fPresentSemaphore(-1),
@@ -166,6 +140,7 @@ HWInterface::HWInterface()
 HWInterface::~HWInterface()
 {
 	_StopPresentThread();
+	delete fTileDamageTracker;
 }
 
 
@@ -279,13 +254,17 @@ HWInterface::SetCursorVisible(bool visible)
 			IntRect r = _CursorFrame();
 
 			_DrawCursor(r);
-			Invalidate(r);
+			if (!fCompositorEnabled) {
+				Invalidate(r);
+			}
 		} else {
 			IntRect r = _CursorFrame();
 			fCursorVisible = visible;
 
 			_RestoreCursorArea();
-			Invalidate(r);
+			if (!fCompositorEnabled) {
+				Invalidate(r);
+			}
 		}
 	}
 	fFloatingOverlaysLock.Unlock();
@@ -332,6 +311,7 @@ HWInterface::MoveCursorTo(float x, float y)
 		}
 		IntRect oldFrame = _CursorFrame();
 		fCursorLocation = p;
+
 		if (fCursorVisible) {
 			// Invalidate and _DrawCursor would not draw
 			// anything if the cursor is hidden
@@ -343,11 +323,13 @@ HWInterface::MoveCursorTo(float x, float y)
 				_DrawCursor(_CursorFrame());
 			}
 			IntRect newFrame = _CursorFrame();
-			if (newFrame.Intersects(oldFrame))
-				Invalidate(oldFrame | newFrame);
-			else {
-				Invalidate(oldFrame);
-				Invalidate(newFrame);
+			if (!fCompositorEnabled) {
+				if (newFrame.Intersects(oldFrame))
+					Invalidate(oldFrame | newFrame);
+				else {
+					Invalidate(oldFrame);
+					Invalidate(newFrame);
+				}
 			}
 		}
 	}
@@ -409,6 +391,10 @@ HWInterface::InvalidateRegion(const BRegion& region)
 			BAutolock _(fPresentInvalidateLock);
 			int32 pendingBefore = fPendingInvalidate.CountRects();
 			fPendingInvalidate.Include(&region);
+			if (fTileDamageTracker != NULL) {
+				for (int32 i = 0; i < region.CountRects(); i++)
+					fTileDamageTracker->MarkDirty(region.RectAt(i));
+			}
 			if (fPendingInvalidate.CountRects() < pendingBefore
 				&& logLevel >= 2) {
 				debug_printf("compositor: pending invalidate shrank unexpectedly "
@@ -416,7 +402,7 @@ HWInterface::InvalidateRegion(const BRegion& region)
 					pendingBefore, fPendingInvalidate.CountRects());
 			}
 		}
-		atomic_add((int32*)&fPendingInvalidations, 1);
+		atomic_add_compat(&fPendingInvalidations, 1);
 		_SchedulePresent();
 		return B_OK;
 	}
@@ -558,6 +544,12 @@ HWInterface::ConfigureCompositor(int32 width, int32 height,
 		fPresentQueue.SetTo(new(std::nothrow) PresentQueue(width, height, format));
 	else
 		fPresentQueue->Resize(width, height, format);
+
+	if (fTileDamageTracker == NULL)
+		fTileDamageTracker = new(std::nothrow) TileDamageTracker(width, height);
+	else
+		fTileDamageTracker->Resize(width, height);
+
 	{
 		BAutolock _(fCompositorSettingsLock);
 		if (fCompositor.IsSet())
@@ -591,6 +583,7 @@ HWInterface::ApplyCompositorSettings(const CompositorSettings& settings)
 		fCompositorShowOverlay = settings.show_overlay;
 		fCompositorLogTimings = settings.log_timings;
 		fCompositorStressInvalidate = settings.stress_invalidate;
+		fCompositorTrueShadows = settings.true_shadows;
 		fCompositorTargetFps = settings.target_fps > 0 ? settings.target_fps : 60;
 		fCompositorLogLevel = logLevel;
 		fCompositorLogEveryN = logEveryN;
@@ -615,11 +608,18 @@ void
 HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 	const rgb_color& background)
 {
-	fWindowSnapshots = snapshots;
-	fCompositorBackground = background;
+	BAutolock _(fPresentInvalidateLock);
+	
+	fCompositorStates[fCompositorStateWrite].snapshots = snapshots;
+	fCompositorStates[fCompositorStateWrite].surfaces = SurfaceManager::CreateSurfaceList(snapshots);
+	fCompositorStates[fCompositorStateWrite].background = background;
 	fCompositorDebugOptions.showOverlay = fCompositorShowOverlay;
 	fCompositorDebugOptions.logTimings = fCompositorLogTimings;
 	fCompositorDebugOptions.stressInvalidate = fCompositorStressInvalidate;
+	fCompositorStateReady = fCompositorStateWrite;
+	fCompositorStateWrite = (fCompositorStateWrite + 1) % 3;
+	if (fCompositorStateWrite == fCompositorStateRead)
+		fCompositorStateWrite = (fCompositorStateWrite + 1) % 3;
 
 	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
 		RenderingBuffer* buffer = DrawingBuffer();
@@ -627,6 +627,39 @@ HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
 			BRegion fullBounds;
 			fullBounds.Set((BRect)buffer->Bounds());
 			fPendingInvalidate.Include(&fullBounds);
+			if (fTileDamageTracker != NULL)
+				fTileDamageTracker->MarkDirty((BRect)buffer->Bounds());
+		}
+		atomic_add_compat(&fPendingInvalidations, 1);
+		_SchedulePresent();
+	}
+}
+
+
+void
+HWInterface::UpdateCompositorState(const std::vector<WindowSnapshot>& snapshots,
+	const rgb_color& background, const CompositorDebugOptions& options)
+{
+	BAutolock _(fPresentInvalidateLock);
+	
+	fCompositorDebugOptions = options;
+	fCompositorStates[fCompositorStateWrite].snapshots = snapshots;
+	fCompositorStates[fCompositorStateWrite].surfaces = SurfaceManager::CreateSurfaceList(snapshots);
+	fCompositorStates[fCompositorStateWrite].background = background;
+	
+	fCompositorStateReady = fCompositorStateWrite;
+	fCompositorStateWrite = (fCompositorStateWrite + 1) % 3;
+	if (fCompositorStateWrite == fCompositorStateRead)
+		fCompositorStateWrite = (fCompositorStateWrite + 1) % 3;
+
+	if (fCompositor.IsSet() && fPresentQueue.IsSet()) {
+		RenderingBuffer* buffer = DrawingBuffer();
+		if (buffer != NULL) {
+			BRegion fullBounds;
+			fullBounds.Set((BRect)buffer->Bounds());
+			fPendingInvalidate.Include(&fullBounds);
+			if (fTileDamageTracker != NULL)
+				fTileDamageTracker->MarkDirty((BRect)buffer->Bounds());
 		}
 		atomic_add_compat(&fPendingInvalidations, 1);
 		_SchedulePresent();
@@ -724,7 +757,7 @@ HWInterface::_SchedulePresent()
 	if (fPresentSemaphore < 0)
 		return;
 
-	if (atomic_test_and_set((int32*)&fPresentScheduled, 1, 0) == 0)
+	if (atomic_test_and_set_compat(&fPresentScheduled, 1, 0) == 0)
 		release_sem(fPresentSemaphore);
 }
 
@@ -732,92 +765,74 @@ HWInterface::_SchedulePresent()
 void
 HWInterface::_ProcessPendingInvalidate()
 {
-	BRegion pending;
-	{
-		BAutolock _(fPresentInvalidateLock);
-		if (fPendingInvalidate.CountRects() > 0) {
-			pending = fPendingInvalidate;
-			fPendingInvalidate.MakeEmpty();
-		}
-	}
-
 	bool compositorEnabled = false;
 	bool animationsEnabled = false;
 	bool translucencyEnabled = false;
-	bool showOverlay = false;
-	bool logTimings = false;
-	bool stressInvalidate = false;
+	bool trueShadows = false;
 	int32 logLevel = 0;
 	int64 logEveryN = 0;
-	std::vector<WindowSnapshot> snapshots;
+	SurfaceList surfaces;
 	rgb_color background = {0,0,0,255};
 	{
 		BAutolock _(fCompositorSettingsLock);
 		compositorEnabled = fCompositorEnabled;
 		animationsEnabled = fCompositorAnimationsEnabled;
 		translucencyEnabled = fCompositorTranslucencyEnabled;
-		showOverlay = fCompositorShowOverlay;
-		logTimings = fCompositorLogTimings;
-		stressInvalidate = fCompositorStressInvalidate;
+		trueShadows = fCompositorTrueShadows;
 		logLevel = fCompositorLogLevel;
 		logEveryN = fCompositorLogEveryN;
-		// copy snapshot state under lock to avoid races with Desktop thread
-		snapshots = fWindowSnapshots;
-		background = fCompositorBackground;
+		// copy state under lock to avoid races with Desktop thread
+		fCompositorStateRead = fCompositorStateReady;
+		surfaces = fCompositorStates[fCompositorStateRead].surfaces;
+		background = fCompositorStates[fCompositorStateRead].background;
 	}
 
 	if (!compositorEnabled || !fPresentQueue.IsSet() || !fCompositor.IsSet())
 		return;
 
-	bigtime_t now = system_time();
 	bool anyAnimActive = false;
 	int32 animatingWindows = 0;
-	for (size_t i = 0; i < snapshots.size(); i++) {
-		WindowSnapshot& snapshot = snapshots[i];
-		if (snapshot.window == NULL)
-			continue;
+	
+	// Collect ALL pending invalidation since last run.
+	BRegion initialDamage;
+	{
+		BAutolock _(fPresentInvalidateLock);
+		initialDamage = fPendingInvalidate;
+		fPendingInvalidate.MakeEmpty();
+	}
 
-		bool allowNormalEffects = translucencyEnabled;
-		bool allowEffects = !snapshot.window->IsNormal() || allowNormalEffects;
-		bool allowAnimations = animationsEnabled && allowEffects;
-		if (allowAnimations && snapshot.window->IsAlphaAnimating()) {
-			snapshot.alpha = snapshot.window->AnimatedAlpha(now);
-			snapshot.animActive = true;
-		} else
-			snapshot.animActive = false;
-
-		snapshot.opaqueFastPath = snapshot.alpha >= 1.0f
-			&& (!snapshot.blurEnabled || snapshot.blurRadius <= 0.0f);
-
+	// Resolve animations and update surface properties
+	const std::vector<WindowSnapshot>& snapshots = fCompositorStates[fCompositorStateRead].snapshots;
+	for (size_t i = 0; i < surfaces.size(); i++) {
+		Surface& surface = surfaces[i];
+		const WindowSnapshot& snapshot = snapshots[i];
+		
+		surface.alpha = snapshot.alpha;
+		surface.isOpaque = snapshot.opaqueFastPath;
+		
 		if (snapshot.animActive) {
 			anyAnimActive = true;
 			animatingWindows++;
+			// Animating surfaces contribute their full visible area to initial damage
+			initialDamage.Include(&surface.damage);
+			if (fTileDamageTracker != NULL)
+				fTileDamageTracker->MarkDirty(surface.damage.Frame());
 		}
+
+		surface.isOpaque = surface.alpha >= 1.0f
+			&& !surface.blurEnabled
+			&& surface.shadowRadius <= 0.0f;
 	}
 
-	if (pending.CountRects() > 0) {
-		for (size_t i = 0; i < snapshots.size(); i++) {
-			const WindowSnapshot& snapshot = snapshots[i];
-			if (snapshot.alpha < 1.0f || snapshot.blurEnabled)
-				pending.Include(&snapshot.visible);
-		}
-	}
-
-	if (pending.CountRects() == 0 && !anyAnimActive)
+	if (initialDamage.CountRects() == 0 && (fTileDamageTracker == NULL)) {
 		return;
-
-	if (pending.CountRects() == 0 && anyAnimActive) {
-		for (size_t i = 0; i < snapshots.size(); i++) {
-			const WindowSnapshot& snapshot = snapshots[i];
-			if (snapshot.animActive)
-				pending.Include(&snapshot.visible);
-		}
-		if (pending.CountRects() == 0)
-			return;
 	}
 
-	if (!LockExclusiveAccess())
+	// Acquire exclusive lock to prevent Desktop thread from drawing to backbuffer
+	// while we are composing. This prevents damage artifacts.
+	if (!LockExclusiveAccess()) {
 		return;
+	}
 
 	RenderingBuffer* source = DrawingBuffer();
 	RenderingBuffer* renderTarget = fPresentQueue->AcquireForRender();
@@ -826,94 +841,55 @@ HWInterface::_ProcessPendingInvalidate()
 		return;
 	}
 
-	if (stressInvalidate) {
-		std::vector<BRegion> replayRegions;
-		replayRegions.reserve(3);
-		_AppendStressReplayRegions(pending, source->Bounds(),
-			fCompositorFrameCounter, replayRegions);
-		for (size_t i = 0; i < replayRegions.size(); i++)
-			pending.Include(&replayRegions[i]);
+	bigtime_t composeStart = system_time();
+	if (fTileDamageTracker != NULL) {
+		fCompositor->ComposeTileGrid(*renderTarget, *source, surfaces, fTileDamageTracker, background);
+		// For now we still use initialDamage for PresentQueue submission
+		// but eventually PresentQueue could be tile-based too.
+	} else {
+		fCompositor->Compose(*renderTarget, *source, initialDamage, surfaces, background, trueShadows);
 	}
+	bigtime_t composeEnd = system_time();
 
-	ComposeStats stats = fCompositor->Compose(*renderTarget, *source,
-		pending, snapshots, background);
-	if (showOverlay && stats.overlayRects.CountRects() > 0)
-		pending.Include(&stats.overlayRects);
-
-	fPresentQueue->Submit(renderTarget, pending);
+	fPresentQueue->Submit(renderTarget, initialDamage);
 	bigtime_t presentTime = fPresentQueue->PresentNext(*this, true);
 
 	PresentQueue::PressureMetrics pressure = fPresentQueue->GetPressureMetrics();
 	UnlockExclusiveAccess();
 
-	int32 invalidations = atomic_get((int32*)&fPendingInvalidations);
-	atomic_set((int32*)&fPendingInvalidations, 0);
-	int32 pendingDirtyRects = 0;
-	{
-		BAutolock _(fPresentInvalidateLock);
-		pendingDirtyRects = fPendingInvalidate.CountRects();
-	}
+	int32 invalidations = atomic_get_compat(&fPendingInvalidations);
+	atomic_set_compat(&fPendingInvalidations, 0);
 
 	fCompositorFrameCounter++;
-	fCompositorComposeAccum += stats.composeTime;
+	fCompositorComposeAccum += (composeEnd - composeStart);
 	fCompositorComposeCount++;
-	bool shouldLog = false;
+	
+	// Logging...
 	if (logEveryN > 0 && logLevel >= 1
 		&& (fCompositorFrameCounter % logEveryN) == 0) {
-		shouldLog = true;
-	}
-	if (logTimings && (fCompositorFrameCounter % 30) == 0)
-		shouldLog = true;
-	if (showOverlay && logLevel >= 1 && (fCompositorFrameCounter % 30) == 0)
-		shouldLog = true;
-	if (stressInvalidate && (fCompositorFrameCounter % 60) == 0)
-		shouldLog = true;
-
-/* 	if (shouldLog) {
 		int64 avgCompose = fCompositorComposeCount > 0
 			? fCompositorComposeAccum / fCompositorComposeCount
 			: 0;
 		debug_printf("compositor: frame %" B_PRId64
-			" invalidations=%" B_PRId32 " dirtyRects=%" B_PRId32
-			" dirtyPixels=%" B_PRId64 " windows=%" B_PRId32
-			" copy=%" B_PRId32 " blend=%" B_PRId32
-			" alpha=%" B_PRId32 " animating=%" B_PRId32
-			" blurred=%" B_PRId32 " blurPixels=%" B_PRId64
-			" blurHits=%" B_PRId32 " blurMisses=%" B_PRId32
-			" blurTime=%" B_PRId64 "us compose=%" B_PRId64 "us"
+			" invalidations=%" B_PRId32 
+			" surfaces=%" B_PRId32
+			" animating=%" B_PRId32 
+			" compose=%" B_PRId64 "us"
 			" avgCompose=%" B_PRId64 "us present=%" B_PRId64 "us"
-			" pendingRects=%" B_PRId32 " pendingDirty=%" B_PRId32
 			" queue(reuse/overwrite/unknown)=%" B_PRId64 "/%" B_PRId64
 			"/%" B_PRId64 " buffering=%s\n",
-			fCompositorFrameCounter, invalidations, stats.dirtyRects,
-			stats.dirtyPixels, stats.windowsComposed,
-			stats.copyPathWindows, stats.blendPathWindows,
-			stats.alphaWindows, animatingWindows,
-			stats.blurredWindows, stats.blurredPixels,
-			stats.blurCacheHits, stats.blurCacheMisses, stats.blurTime,
-			stats.composeTime, avgCompose, presentTime,
-			pending.CountRects(), pendingDirtyRects,
+			fCompositorFrameCounter, invalidations,
+			(int32)surfaces.size(),
+			animatingWindows,
+			composeEnd - composeStart, avgCompose, presentTime,
 			pressure.acquireReuseCount, pressure.readyOverwriteCount,
 			pressure.unknownSubmitCount,
 			fPresentQueue.IsSet() ? "intermediate" : "frontbuffer");
 		fCompositorComposeAccum = 0;
 		fCompositorComposeCount = 0;
-	} */
-
-	fPresentCounter++;
-	now = system_time();
-	if (fPresentLogTime == 0)
-		fPresentLogTime = now;
-	if (logLevel >= 2 && now - fPresentLogTime >= 1000000) {
-		debug_printf("compositor: presents per second %" B_PRId64 "\n",
-			fPresentCounter);
-		fPresentCounter = 0;
-		fPresentLogTime = now;
 	}
 
-	if (anyAnimActive)
-		_SchedulePresent();
-
+	fPresentCounter++;
 	fCompositorAnimActive = anyAnimActive;
 }
 
@@ -922,14 +898,19 @@ status_t
 HWInterface::_PresentThreadEntry(void* data)
 {
 	HWInterface* interface = static_cast<HWInterface*>(data);
-	while (atomic_get((int32*)&interface->fPresentThreadRunning) != 0) {
+	while (atomic_get_compat(&interface->fPresentThreadRunning) != 0) {
 		status_t status = acquire_sem(interface->fPresentSemaphore);
 		if (status != B_OK
-			|| atomic_get((int32*)&interface->fPresentThreadRunning) == 0) {
+			|| atomic_get_compat(&interface->fPresentThreadRunning) == 0) {
 			continue;
 		}
 
-		while (atomic_get((int32*)&interface->fPresentThreadRunning) != 0) {
+		while (atomic_get_compat(&interface->fPresentThreadRunning) != 0) {
+			// Coalesce small rapid updates by waiting a tiny bit
+			// if we are not in an animation.
+			if (!interface->fCompositorAnimActive)
+				snooze(1000); // 1ms delay to let more damage accumulate
+
 			interface->_ProcessPendingInvalidate();
 
 			// Mark scheduling slot as free. If new work arrived while composing,
@@ -965,7 +946,7 @@ HWInterface::_PresentThreadEntry(void* data)
 				BAutolock _(interface->fPresentInvalidateLock);
 				if (interface->fPendingInvalidate.CountRects() == 0
 					&& !interface->fCompositorAnimActive) {
-					atomic_set((int32*)&interface->fPresentScheduled, 0);
+					atomic_set_compat(&interface->fPresentScheduled, 0);
 					break;
 				}
 			}

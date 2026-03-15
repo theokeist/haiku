@@ -34,8 +34,10 @@
 #include "Desktop.h"
 #include "DrawingEngine.h"
 #include "HWInterface.h"
+#include "MallocBuffer.h"
 #include "MessagePrivate.h"
 #include "PortLink.h"
+#include "RenderingBuffer.h"
 #include "ServerApp.h"
 #include "ServerWindow.h"
 #include "WindowBehaviour.h"
@@ -130,7 +132,11 @@ Window::Window(const BRect& frame, const char *name,
 	fMinHeight(1),
 	fMaxHeight(32768),
 
-	fWorkspacesViewCount(0)
+	fWorkspacesViewCount(0),
+	fDrawingBuffer(NULL),
+	fBufferGeneration(0),
+	fLastComposedGeneration(0),
+	fVisualTranslation(0, 0)
 {
 	_InitWindowStack();
 
@@ -187,6 +193,7 @@ Window::~Window()
 	DetachFromWindowStack(false);
 
 	gDecorManager.CleanupForWindow(this);
+	fDrawingBuffer.Unset();
 }
 
 
@@ -478,6 +485,16 @@ Window::MoveBy(int32 x, int32 y, bool moveStack)
 
 	fEffectiveDrawingRegionValid = false;
 
+	// Phase 3: Update private drawing buffer offset
+	if (fDrawingBuffer != NULL) {
+		BRegion footprint;
+		GetFullRegion(&footprint);
+		BRect bounds = footprint.Frame();
+		if (bounds.IsValid()) {
+			fDrawingEngine->SetRendererOffset((int32)bounds.left, (int32)bounds.top);
+		}
+	}
+
 	if (fTopView.IsSet()) {
 		fTopView->MoveBy(x, y, NULL);
 		fTopView->UpdateOverlay();
@@ -541,6 +558,22 @@ Window::ResizeBy(int32 x, int32 y, BRegion* dirtyRegion, bool resizeStack)
 
 	fFrame.right += x;
 	fFrame.bottom += y;
+
+	// Phase 3: Resize private drawing buffer
+	if (fDrawingBuffer != NULL) {
+		BRegion footprint;
+		GetFullRegion(&footprint);
+		BRect bounds = footprint.Frame();
+		if (bounds.IsValid()) {
+			CompositorBuffer* newBuffer = new(std::nothrow) CompositorBuffer(
+				(int32)bounds.Width() + 1, (int32)bounds.Height() + 1);
+			if (newBuffer != NULL && newBuffer->InitCheck() == B_OK) {
+				fDrawingBuffer.SetTo(newBuffer);
+				fDrawingEngine->SetTarget(newBuffer->Buffer());
+				fDrawingEngine->SetRendererOffset((int32)bounds.left, (int32)bounds.top);
+			}
+		}
+	}
 
 	fContentRegionValid = false;
 	fEffectiveDrawingRegionValid = false;
@@ -940,6 +973,8 @@ Window::ProcessDirtyRegion(const BRegion& dirtyRegion, const BRegion& exposeRegi
 
 	fDirtyRegion.Include(&dirtyRegion);
 	fExposeRegion.Include(&exposeRegion);
+	
+	atomic_add(&fBufferGeneration, 1);
 }
 
 
@@ -1085,6 +1120,10 @@ Window::MouseDown(BMessage* message, BPoint where,
 	const ClickTarget& lastClickTarget, int32& clickCount,
 	ClickTarget& _clickTarget)
 {
+	BPoint logicalWhere = where - fVisualTranslation;
+	if (fVisualTranslation != BPoint(0, 0))
+		message->ReplacePoint("where", logicalWhere);
+
 	// If the previous click hit our decorator, get the hit region.
 	int32 windowToken = fWindow->ServerToken();
 	int32 lastHitRegion = 0;
@@ -1095,7 +1134,7 @@ Window::MouseDown(BMessage* message, BPoint where,
 
 	// Let the window behavior process the mouse event.
 	int32 hitRegion = 0;
-	bool eventEaten = fWindowBehaviour->MouseDown(message, where, lastHitRegion,
+	bool eventEaten = fWindowBehaviour->MouseDown(message, logicalWhere, lastHitRegion,
 		clickCount, hitRegion);
 
 	if (eventEaten) {
@@ -1105,7 +1144,7 @@ Window::MouseDown(BMessage* message, BPoint where,
 	} else {
 		// click was inside the window contents
 		int32 viewToken = B_NULL_TOKEN;
-		if (View* view = ViewAt(where)) {
+		if (View* view = ViewAt(logicalWhere)) {
 			if (HasModal())
 				return;
 
@@ -1137,7 +1176,7 @@ Window::MouseDown(BMessage* message, BPoint where,
 
 			// fill out view token for the view under the mouse
 			viewToken = view->Token();
-			view->MouseDown(message, where);
+			view->MouseDown(message, logicalWhere);
 		}
 
 		_clickTarget = ClickTarget(ClickTarget::TYPE_WINDOW_CONTENTS,
@@ -1149,14 +1188,18 @@ Window::MouseDown(BMessage* message, BPoint where,
 void
 Window::MouseUp(BMessage* message, BPoint where, int32* _viewToken)
 {
-	fWindowBehaviour->MouseUp(message, where);
+	BPoint logicalWhere = where - fVisualTranslation;
+	if (fVisualTranslation != BPoint(0, 0))
+		message->ReplacePoint("where", logicalWhere);
 
-	if (View* view = ViewAt(where)) {
+	fWindowBehaviour->MouseUp(message, logicalWhere);
+
+	if (View* view = ViewAt(logicalWhere)) {
 		if (HasModal())
 			return;
 
 		*_viewToken = view->Token();
-		view->MouseUp(message, where);
+		view->MouseUp(message, logicalWhere);
 	}
 }
 
@@ -1165,7 +1208,11 @@ void
 Window::MouseMoved(BMessage *message, BPoint where, int32* _viewToken,
 	bool isLatestMouseMoved, bool isFake)
 {
-	View* view = ViewAt(where);
+	BPoint logicalWhere = where - fVisualTranslation;
+	if (fVisualTranslation != BPoint(0, 0))
+		message->ReplacePoint("where", logicalWhere);
+
+	View* view = ViewAt(logicalWhere);
 	if (view != NULL)
 		*_viewToken = view->Token();
 
@@ -1173,12 +1220,12 @@ Window::MouseMoved(BMessage *message, BPoint where, int32* _viewToken,
 	if (!isLatestMouseMoved)
 		return;
 
-	fWindowBehaviour->MouseMoved(message, where, isFake);
+	fWindowBehaviour->MouseMoved(message, logicalWhere, isFake);
 
 	// mouse cursor
 
 	if (view != NULL) {
-		view->MouseMoved(message, where);
+		view->MouseMoved(message, logicalWhere);
 
 		// TODO: there is more for real cursor support, ie. if a window is closed,
 		//		new app cursor shouldn't override view cursor, ...

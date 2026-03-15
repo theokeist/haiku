@@ -37,7 +37,7 @@ rule PCIHeaderGen
 
 actions PCIHeaderGen1
 {
-	awk -v HEADERFILE=$(1) -f $(2[2]) $(2[1])
+	LC_ALL=C awk -v HEADERFILE=$(1) -f $(2[2]) $(2[1])
 }
 
 local pciidsFile = pci.ids ;
@@ -57,7 +57,7 @@ rule USBHeaderGen
 
 actions USBHeaderGen1
 {
-	awk -v HEADERFILE=$(1) -f $(2[2]) $(2[1])
+	LC_ALL=C awk -v HEADERFILE=$(1) -f $(2[2]) $(2[1])
 }
 
 local usbidsFile = usb.ids ;
@@ -77,7 +77,7 @@ rule ACPIPnPHeaderGen
 
 actions ACPIPnPHeaderGen1
 {
-	awk -f $(2[1]) $(2[2-]) > $(1) ;
+	LC_ALL=C awk -f $(2[1]) $(2[2-]) > $(1) ;
 }
 
 # files can be updated so:

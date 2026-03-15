@@ -219,6 +219,16 @@ struct DefaultWindowBehaviour::DragState : MouseTrackingState {
 	{
 	}
 
+	virtual void ExitState(State* nextState)
+	{
+		// Commit the visual translation to the logical frame when dragging ends.
+		BPoint translation = fWindow->VisualTranslation();
+		if (translation != BPoint(0, 0)) {
+			fWindow->SetVisualTranslation(BPoint(0, 0));
+			fDesktop->MoveWindowBy(fWindow, translation.x, translation.y);
+		}
+	}
+
 	virtual bool MouseDown(BMessage* message, BPoint where, bool& _unhandled)
 	{
 		// right-click while dragging shall bring the window to front
@@ -237,13 +247,24 @@ struct DefaultWindowBehaviour::DragState : MouseTrackingState {
 	virtual void MouseMovedAction(BPoint& delta, bigtime_t now)
 	{
 		if ((fWindow->Flags() & B_NOT_MOVABLE) == 0) {
-			BPoint oldLeftTop = fWindow->Frame().LeftTop();
-
 			fBehavior.AlterDeltaForSnap(fWindow, delta, now);
-			fDesktop->MoveWindowBy(fWindow, delta.x, delta.y);
-
-			// constrain delta to true change in position
-			delta = fWindow->Frame().LeftTop() - oldLeftTop;
+			
+			// Zero-latency path: apply offset to visual translation 
+			// instead of triggering a full logical MoveBy().
+			BPoint translation = fWindow->VisualTranslation();
+			translation += delta;
+			fWindow->SetVisualTranslation(translation);
+			
+			// Damage the union of old and new visual positions to ensure clean 
+			// trails in the compositor.
+			BRect oldVisual = fWindow->VisibleRegion().Frame();
+			oldVisual.OffsetBy(translation - delta);
+			BRect newVisual = fWindow->VisibleRegion().Frame();
+			newVisual.OffsetBy(translation);
+			
+			BRegion dirty(oldVisual);
+			dirty.Include(newVisual);
+			fDesktop->MarkDirty(dirty);
 		} else
 			delta = BPoint(0, 0);
 	}

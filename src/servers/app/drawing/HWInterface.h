@@ -23,9 +23,11 @@
 
 #include <new>
 
+#include "Compositor.h"
 #include "IntRect.h"
 #include "MultiLocker.h"
 #include "ServerCursor.h"
+#include "TileDamageTracker.h"
 #include "../CompositorDebugOptions.h"
 
 
@@ -168,6 +170,7 @@ public:
 									color_space format);
 			void				ApplyCompositorSettings(
 									const CompositorSettings& settings);
+			bool				IsCompositorEnabled() const { return fCompositorEnabled; }
 			void				UpdateCompositorState(
 									const std::vector<WindowSnapshot>& snapshots,
 									const rgb_color& background);
@@ -265,6 +268,7 @@ protected:
 			BPoint				fDragBitmapOffset;
 			ServerCursorReference
 								fCursorAndDragBitmap;
+			RenderingBuffer*	fCursorBitmapBuffer;
 			bool				fCursorVisible;
 			bool				fCursorObscured;
 			bool				fHardwareCursorEnabled;
@@ -277,9 +281,18 @@ protected:
 								fPresentQueue;
 			ObjectDeleter<Compositor>
 								fCompositor;
-			std::vector<WindowSnapshot>
-								fWindowSnapshots;
-			rgb_color			fCompositorBackground;
+			
+			struct CompositorState {
+				std::vector<WindowSnapshot> snapshots;
+				SurfaceList surfaces;
+				rgb_color background;
+				BRegion dirty;
+			};
+			CompositorState		fCompositorStates[3];
+			int32				fCompositorStateWrite;
+			int32				fCompositorStateReady;
+			int32				fCompositorStateRead;
+			
 			int64				fCompositorFrameCounter;
 			int64				fCompositorLogEveryN;
 			int64				fCompositorComposeAccum;
@@ -292,11 +305,13 @@ protected:
 			bool				fCompositorShowOverlay;
 			bool				fCompositorLogTimings;
 			bool				fCompositorStressInvalidate;
+			bool				fCompositorTrueShadows;
 			int32				fCompositorTargetFps;
 			int32				fCompositorLogLevel;
 			BLocker				fCompositorSettingsLock;
 			CompositorDebugOptions	fCompositorDebugOptions;
 			BRegion				fPendingInvalidate;
+			TileDamageTracker*	fTileDamageTracker;
 			BLocker				fPresentInvalidateLock;
 			thread_id			fPresentThread;
 			sem_id				fPresentSemaphore;

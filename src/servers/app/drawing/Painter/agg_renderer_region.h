@@ -115,24 +115,41 @@ namespace agg
 		}
 
 		//--------------------------------------------------------------------
+		void _update_bounds()
+		{
+			if (m_region) {
+				clipping_rect r = m_region->FrameInt();
+				
+				// Clamp to buffer bounds in screen space
+				int32 screenX1 = m_offset_x + (int)width() - 1;
+				int32 screenY1 = m_offset_y + (int)height() - 1;
+				
+				r.left = max_c(m_offset_x, r.left);
+				r.top = max_c(m_offset_y, r.top);
+				r.right = min_c(screenX1, r.right);
+				r.bottom = min_c(screenY1, r.bottom);
+
+				if (r.left <= r.right && r.top <= r.bottom) {
+					m_bounds.x1 = r.left;
+					m_bounds.y1 = r.top;
+					m_bounds.x2 = r.right;
+					m_bounds.y2 = r.bottom;
+				} else {
+					m_bounds.x1 = 0;
+					m_bounds.y1 = 0;
+					m_bounds.x2 = -1;
+					m_bounds.y2 = -1;
+				}
+			} else {
+				m_bounds = m_ren.clip_box();
+				translate_from_base_ren(m_bounds);
+			}
+		}
+
 		void set_clipping_region(BRegion* region)
 		{
 			m_region = region;
-			if (m_region) {
-				clipping_rect r = m_region->FrameInt();
-				if (r.left <= r.right && r.top <= r.bottom) {
-					// clip rect_i to frame buffer bounds
-					r.left = max_c(0, r.left);
-					r.top = max_c(0, r.top);
-					r.right = min_c((int)width() - 1, r.right);
-					r.bottom = min_c((int)height() - 1, r.bottom);
-
-					if(r.left < m_bounds.x1) m_bounds.x1 = r.left;
-					if(r.top < m_bounds.y1) m_bounds.y1 = r.top;
-					if(r.right > m_bounds.x2) m_bounds.x2 = r.right;
-					if(r.bottom > m_bounds.y2) m_bounds.y2 = r.bottom;
-				}
-			}
+			_update_bounds();
 		}
 
 		//--------------------------------------------------------------------
@@ -140,12 +157,11 @@ namespace agg
 		{
 			m_offset_x = offset_x;
 			m_offset_y = offset_y;
-
-			if (m_region == NULL) {
-				m_bounds = m_ren.clip_box();
-				translate_from_base_ren(m_bounds);
-			}
+			_update_bounds();
 		}
+
+		int offset_x() const { return m_offset_x; }
+		int offset_y() const { return m_offset_y; }
 
 		//--------------------------------------------------------------------
 		void translate_to_base_ren_x(int& x)
